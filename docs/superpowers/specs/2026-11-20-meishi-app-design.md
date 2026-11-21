@@ -125,7 +125,18 @@ Người dùng sửa được `rank` bằng tay.
 
 ## 5. Màn hình
 
-Điều hướng dưới (bottom nav): **Danh thiếp · Công ty · Cài đặt**. Nút tròn 📷 nổi ở màn Danh thiếp.
+Điều hướng dưới (bottom nav): **Danh thiếp · Công ty · Từ điển · Cài đặt**. Nút tròn 📷 nổi ở màn Danh thiếp.
+
+**Ngôn ngữ giao diện:** 日本語 / Tiếng Việt / English, chọn ở ⑦ (segmented control), lưu localStorage theo thiết bị;
+lần đầu lấy theo `navigator.language` (ja → 日本語, vi → Tiếng Việt, còn lại → English). Dùng `vue-i18n`, chuỗi giao diện
+ở `src/i18n/{ja,vi,en}.json`. Nội dung danh thiếp không dịch. Từ điển ⑧ luôn hiện đủ 3 cột Nhật/Việt/Anh;
+nhãn nhóm cấp bậc theo ngôn ngữ giao diện.
+
+**Sơ đồ tổ chức – 2 phương án đang so sánh** (bản thiết kế: artboard ⑥ và ⑥-B):
+- A · Dạng cây: cây thụt lề gập/mở (mục 5.1).
+- B · Dạng khối: (1) chuỗi báo cáo của người đang xem — thẻ nối dọc từ cấp cao nhất xuống; (2) đồng nghiệp cùng phòng;
+  (3) sơ đồ khối toàn công ty từ trên xuống, nhánh của người đang xem được tô màu, chạm khối → danh sách người.
+Có thể giữ cả hai bằng nút chuyển "Dạng cây | Dạng khối".
 
 | Route | Màn | Nội dung chính |
 |---|---|---|
