@@ -132,11 +132,7 @@ lần đầu lấy theo `navigator.language` (ja → 日本語, vi → Tiếng V
 ở `src/i18n/{ja,vi,en}.json`. Nội dung danh thiếp không dịch. Từ điển ⑧ luôn hiện đủ 3 cột Nhật/Việt/Anh;
 nhãn nhóm cấp bậc theo ngôn ngữ giao diện.
 
-**Sơ đồ tổ chức – 2 phương án đang so sánh** (bản thiết kế: artboard ⑥ và ⑥-B):
-- A · Dạng cây: cây thụt lề gập/mở (mục 5.1).
-- B · Dạng khối: (1) chuỗi báo cáo của người đang xem — thẻ nối dọc từ cấp cao nhất xuống; (2) đồng nghiệp cùng phòng;
-  (3) sơ đồ khối toàn công ty từ trên xuống, nhánh của người đang xem được tô màu, chạm khối → danh sách người.
-Có thể giữ cả hai bằng nút chuyển "Dạng cây | Dạng khối".
+**Sơ đồ tổ chức:** đã chốt phương án **dạng khối** (bản thiết kế: artboard ⑥). Phương án dạng cây thụt lề đã loại.
 
 | Route | Màn | Nội dung chính |
 |---|---|---|
@@ -145,7 +141,7 @@ Có thể giữ cả hai bằng nút chuyển "Dạng cây | Dạng khối".
 | `#/card/:id` | ③ Chi tiết | Ảnh (chạm phóng to, đổi trước/sau); các trường kèm nút Gọi / Mail / Bản đồ / Copy; **[Xem trong sơ đồ]**; **[Lưu vào danh bạ]** (.vcf); [Đọc lại], [Sửa], [Xóa]. |
 | `#/card/:id/edit` | ④ Sửa | Form tất cả trường; trường do OCR điền có viền nhấn để kiểm tra; chọn công ty, sửa `deptPath` (dạng các ô tầng), `rank`, chọn `reportsTo` (danh sách người cùng công ty). |
 | `#/companies` | ⑤ Danh sách công ty | Tên công ty, số danh thiếp; tìm kiếm. |
-| `#/company/:id?focus=:personId` | ⑥ Sơ đồ tổ chức | Cây thụt lề gập/mở: Công ty → tầng phòng ban → người (xếp theo rank). Trưởng nhánh (rank nhỏ nhất của phòng) hiện cạnh tên phòng. Placeholder hiện nét đứt. `focus` → tự bung nhánh, cuộn tới và tô nổi người đó. Chế độ **Chỉnh sửa**: thêm placeholder, đổi tên/gộp phòng ban (ghi `deptAliases`), đặt `reportsTo`. Chạm vào người có danh thiếp → ③. |
+| `#/company/:id?focus=:personId` | ⑥ Sơ đồ tổ chức (dạng khối) | Có `focus`: **(1) Chuỗi báo cáo** — thẻ người nối dọc từ cấp cao nhất công ty xuống người được focus (thẻ của người đó tô màu nhấn); **(2) Cùng phòng** — lưới 2 cột các người khác trong phòng ban sâu nhất của người đó. Luôn có: **(3) Toàn công ty** — sơ đồ khối từ trên xuống (công ty → tầng phòng ban), mỗi khối ghi tên phòng, trưởng nhánh, số người; nhánh chứa người được focus viền/tô màu nhấn; khối có thể cuộn ngang khi một tầng có nhiều hơn 3 phòng. Chạm khối → mở danh sách người của khối đó (bottom sheet). Placeholder hiện nét đứt. Chế độ **Chỉnh sửa** (nút trên header): thêm placeholder, đổi tên/gộp phòng ban (ghi `deptAliases`), đặt `reportsTo`. Chạm vào người có danh thiếp → ③. |
 | `#/settings` | ⑦ Cài đặt | GitHub owner/repo/token (nút Kiểm tra kết nối), Gemini key + model, trạng thái sync (số mục trong outbox, lần sync cuối, nút Sync ngay), xuất CSV / vCard tất cả, ghi chú quyền riêng tư, link tới ⑧. |
 | `#/titles?q=` | ⑧ Từ điển chức danh | Trang **tĩnh** (dữ liệu đóng gói trong app, không cần token/mạng). Ô tìm (Nhật, kana, Việt, Anh); danh sách nhóm theo cấp bậc 1→7; mỗi dòng: chức danh Nhật + cách đọc, tương đương tiếng Việt, tiếng Anh, ghi chú ngắn. Ở màn ③, chạm vào chức danh → mở ⑧ với `q` = chức danh đó; nếu chức danh có trong từ điển thì ③ hiện luôn nghĩa tiếng Việt bên cạnh (VD: `課長 · Trưởng ban`). |
 
@@ -206,8 +202,12 @@ Khớp chức danh: bỏ phần phòng ban đứng trước (VD `営業部長` �
 1. Lấy cards + placeholders của company; áp `deptAliases` lên từng phần tử `deptPath`.
 2. Dựng cây phòng ban theo `deptPath` (prefix chung = cùng nhánh). Người không có `deptPath` → nhóm "(Chưa rõ phòng ban)" dưới gốc.
 3. Trong mỗi phòng ban: người xếp theo `rank` tăng dần, rồi theo tên. Người có rank nhỏ nhất = trưởng nhánh.
-4. Người có `reportsTo` hợp lệ → hiển thị lồng dưới người được trỏ tới (ưu tiên hơn vị trí theo phòng ban).
-   Phát hiện vòng lặp `reportsTo` → bỏ qua liên kết gây vòng.
+   Người ở gốc công ty (không có `deptPath`, rank 1–2) là cấp cao nhất. Người không có `deptPath` và rank ≥ 3 → khối "(Chưa rõ phòng ban)".
+4. **Cấp trên** của một người P: nếu có `reportsTo` hợp lệ → người đó; nếu không → trưởng nhánh của phòng P
+   (nếu P chính là trưởng nhánh thì lấy trưởng nhánh của phòng cha), lặp lên tới gốc công ty.
+5. **Chuỗi báo cáo** = đi theo "cấp trên" từ P lên tới đỉnh, rồi đảo ngược để hiển thị từ trên xuống.
+   Phát hiện vòng lặp `reportsTo` → bỏ qua liên kết gây vòng, quay về suy luận theo phòng ban.
+6. **Khối toàn công ty** = cây phòng ban ở bước 2; mỗi khối: tên, trưởng nhánh, tổng số người (gồm cả phòng con).
 
 ## 6. Xử lý lỗi
 - Token sai / hết hạn (401/403): banner đỏ "Không đồng bộ được — kiểm tra token", dữ liệu vẫn dùng offline.
