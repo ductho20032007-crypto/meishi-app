@@ -276,7 +276,10 @@ describe('matchTitle', () => {
   ])('JA tie-break %s', (t, rank, ja) => {
     expect(matchTitle(t)).toMatchObject({ rank, entry: { ja } })
   })
-  it.each([['次長兼課長', 4, '次長'], ['部長兼課長', 4, '部長']])('concurrent post %s', (t, rank, ja) => {
+  it.each([
+    ['次長兼課長', 4, '次長'], ['部長兼課長', 4, '部長'], ['社長室長兼課長', 4, '室長'],
+    ['課長兼社長室長', 4, '室長'], ['会長秘書兼課長', 5, '課長'], ['副部長兼課長', 5, '課長']
+  ])('concurrent post %s', (t, rank, ja) => {
     expect(matchTitle(t)).toMatchObject({ rank, entry: { ja } })
   })
   it('deputy prefix lowers rank by one', () => {
@@ -383,6 +386,20 @@ const pick = (a, b, t) => {
   return b.entry.rank < a.entry.rank ? b : a
 }
 export function matchTitle(title) {
+  const raw0 = (title || '').normalize('NFKC')
+  if (raw0.includes('兼')) {
+    // concurrent posts ("次長兼課長"): evaluate each part, the highest post wins; ties -> part with an entry, then the first
+    const parts = raw0.split('兼').map(x => x.trim()).filter(Boolean)
+    if (parts.length > 1) {
+      return parts.map(matchOne).reduce((a, b) => {
+        if (b.rank !== a.rank) return b.rank < a.rank ? b : a
+        return !a.entry && b.entry ? b : a
+      })
+    }
+  }
+  return matchOne(title)
+}
+function matchOne(title) {
   const t = (title || '').normalize('NFKC').replace(/\s/g, '')
   if (!t) return { entry: null, rank: 7 }
   const hits = VARIANTS.filter(v => t.includes(v.key))
@@ -395,13 +412,6 @@ export function matchTitle(title) {
         if (a.entry.rank !== b.entry.rank) return b.entry.rank < a.entry.rank ? b : a
         const sa = t.endsWith(a.key), sb = t.endsWith(b.key)
         if (sa !== sb) return sb ? b : a
-        return b.key.length > a.key.length ? b : a
-      }, null)
-    } else if (t.includes('兼')) {
-      // concurrent posts ("次長兼課長"): the higher post (lowest rank number) wins; ties -> longest
-      best = hits.reduce((a, b) => {
-        if (!a) return b
-        if (a.entry.rank !== b.entry.rank) return b.entry.rank < a.entry.rank ? b : a
         return b.key.length > a.key.length ? b : a
       }, null)
     } else {
@@ -538,11 +548,39 @@ describe('buildOrg', () => {
     const ps = people(); ps.find(p => p.id === 'yamada').reportsTo = 'suzuki'
     expect(buildOrg(ps).chain('yamada').map(p => p.id)).toEqual(['ito', 'suzuki', 'yamada'])
   })
-  it('ignores reportsTo cycles', () => {
+  it('ignores reportsTo cycles for every member', () => {
     const ps = people()
     ps.find(p => p.id === 'yamada').reportsTo = 'tanaka'
     ps.find(p => p.id === 'tanaka').reportsTo = 'yamada'
-    expect(buildOrg(ps).chain('yamada').map(p => p.id)).toEqual(['ito', 'suzuki', 'tanaka', 'yamada'])
+    const org = buildOrg(ps)
+    expect(org.chain('yamada').map(p => p.id)).toEqual(['ito', 'suzuki', 'tanaka', 'yamada'])
+    expect(org.chain('tanaka').map(p => p.id)).toEqual(['ito', 'suzuki', 'tanaka'])
+    expect(org.bossOf('tanaka').id).toBe('suzuki')
+  })
+  it('ignores reportsTo pointing at a subordinate', () => {
+    const ps = people(); ps.find(p => p.id === 'suzuki').reportsTo = 'yamada'
+    expect(buildOrg(ps).chain('suzuki').map(p => p.id)).toEqual(['ito', 'suzuki'])
+  })
+  it('missing rank is 7: unknown node, never root head', () => {
+    const org = buildOrg([P('u', 'U', undefined, []), P('v', 'V', 5, ['A'])])
+    expect(org.nodeOf('u').unknown).toBe(true)
+    expect(org.root.head).toBeNull()
+  })
+  it('merges dept segments that normalise equal', () => {
+    const org = buildOrg([P('a', 'a', 5, ['第一営業部']), P('b', 'b', 5, ['第一営業部 ']), P('c', 'c', 5, ['ＩＴ部']), P('d', 'd', 5, ['IT部'])])
+    expect(org.root.children).toHaveLength(2)
+    expect(org.nodeOf('a')).toBe(org.nodeOf('b'))
+    expect(org.nodeOf('c')).toBe(org.nodeOf('d'))
+    expect(org.nodeOf('a').name).toBe('第一営業部')
+  })
+  it('unknown node head is not an inferred boss', () => {
+    const org = buildOrg([P('ito', 'I', 1, []), P('u', 'U', 4, []), P('w', 'W', 6, [])])
+    expect(org.nodeOf('u').unknown).toBe(true)
+    expect(org.chain('w').map(p => p.id)).toEqual(['ito', 'w'])
+  })
+  it('segments containing / do not collide', () => {
+    const org = buildOrg([P('a', 'a', 5, ['A/B']), P('b', 'b', 5, ['A', 'B'])])
+    expect(org.nodeOf('a')).not.toBe(org.nodeOf('b'))
   })
   it('applies deptAliases', () => {
     const ps = [...people(), P('z', 'Z', 7, ['営業本部', '第1営業部'])]
@@ -554,7 +592,7 @@ describe('buildOrg', () => {
     expect(org.nodeOf('u').unknown).toBe(true)
   })
   it('pathTo returns node keys from root to person node', () => {
-    expect(buildOrg(people()).pathTo('yamada')).toEqual(['営業本部', '営業本部/第一営業部'])
+    expect(buildOrg(people()).pathTo('yamada')).toEqual(['営業本部', '営業本部第一営業部'])
   })
 })
 ```
@@ -566,7 +604,10 @@ describe('buildOrg', () => {
 ```js
 // src/lib/orgChart.js
 import { normalizeDept } from './normalize.js'
-const byRank = (a, b) => (a.rank - b.rank) || (a.name || '').localeCompare(b.name || '', 'ja')
+const SEP = '\u001f'
+const rk = p => (typeof p.rank === 'number' && Number.isFinite(p.rank) ? p.rank : 7)
+const byRank = (a, b) => (rk(a) - rk(b)) || (a.name || '').localeCompare(b.name || '', 'ja')
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const node = (name, key, parent, unknown = false) => ({ name, key, parent, unknown, children: [], people: [], head: null, total: 0 })
 
 export function buildOrg(people, deptAliases = {}) {
@@ -575,42 +616,58 @@ export function buildOrg(people, deptAliases = {}) {
   const where = new Map()
   const byId = new Map(people.map(p => [p.id, p]))
   for (const p of people) {
-    const path = (p.deptPath || []).map(d => alias.get(normalizeDept(d)) ?? d).filter(Boolean)
+    const path = (p.deptPath || []).map(d => alias.get(normalizeDept(d)) ?? d).filter(d => normalizeDept(d))
     let n = root
-    if (!path.length && p.rank >= 3) {
+    if (!path.length && rk(p) >= 3) {
       n = root.children.find(c => c.unknown) || (root.children.push(node(null, '?', root, true)), root.children.at(-1))
     }
     for (const seg of path) {
-      const key = n.key ? `${n.key}/${seg}` : seg
+      const nk = normalizeDept(seg)
+      const key = n.key ? `${n.key}${SEP}${nk}` : nk
       let c = n.children.find(x => x.key === key)
-      if (!c) { c = node(seg, key, n); n.children.push(c) }
+      if (!c) { c = node(seg.trim(), key, n); n.children.push(c) }
       n = c
     }
     n.people.push(p); where.set(p.id, n)
   }
   ;(function fin(n) {
     n.people.sort(byRank); n.head = n.people[0] || null
-    n.children.sort((a, b) => (a.unknown - b.unknown) || ((a.name || '') < (b.name || '') ? -1 : (a.name || '') > (b.name || '') ? 1 : 0))
+    n.children.sort((a, b) => (a.unknown - b.unknown) || cmp(a.name || '', b.name || ''))
     n.total = n.people.length + n.children.reduce((s, c) => s + fin(c), 0)
     return n.total
   })(root)
 
   function inferredBoss(p) {
     const n = where.get(p.id)
-    if (n.head && n.head.id !== p.id && n.head.rank < p.rank) return n.head
-    for (let a = n.parent; a; a = a.parent) if (a.head && a.head.id !== p.id) return a.head
+    if (!n.unknown && n.head && n.head.id !== p.id && rk(n.head) < rk(p)) return n.head
+    for (let a = n.parent; a; a = a.parent) if (!a.unknown && a.head && a.head.id !== p.id) return a.head
     return null
   }
-  function bossOf(p, explicit = true) {
-    if (explicit && p.reportsTo && byId.has(p.reportsTo) && p.reportsTo !== p.id) return byId.get(p.reportsTo)
-    return inferredBoss(p)
+  // explicit reportsTo edges that are accepted (no cycle, not pointing at a subordinate)
+  const explicit = new Map()
+  const bossOf = p => (explicit.has(p.id) ? byId.get(explicit.get(p.id)) : inferredBoss(p))
+  const validTarget = p => (p.reportsTo && p.reportsTo !== p.id && byId.has(p.reportsTo) ? p.reportsTo : null)
+  const onCycle = new Set()
+  for (const p of people) {
+    const seen = new Set([p.id])
+    for (let t = validTarget(p); t; t = validTarget(byId.get(t))) {
+      if (t === p.id) { onCycle.add(p.id); break }
+      if (seen.has(t)) break
+      seen.add(t)
+    }
+  }
+  for (const p of people) {
+    const t = validTarget(p)
+    if (!t || onCycle.has(p.id)) continue
+    let sub = false
+    for (let c = byId.get(t), i = 0; c && i <= people.length; c = bossOf(c), i++) if (c.id === p.id) { sub = true; break }
+    if (!sub) explicit.set(p.id, t)
   }
   function chain(id) {
     const start = byId.get(id); if (!start) return []
     const out = [start]; const seen = new Set([id])
     for (let cur = start; ;) {
-      let b = bossOf(cur)
-      if (b && seen.has(b.id)) b = bossOf(cur, false)
+      const b = bossOf(cur)
       if (!b || seen.has(b.id)) break
       out.push(b); seen.add(b.id); cur = b
     }
@@ -653,6 +710,11 @@ it('reports same-field conflicts', () => {
 it('no base: identical fields fine, differing fields conflict', () => {
   expect(merge3(null, { a: 1, b: 2 }, { a: 1, b: 3 }).conflicts).toEqual(['b'])
 })
+it('unions tags when both sides changed', () => {
+  const r = merge3(base, { ...base, tags: ['a', 'b'] }, { ...base, tags: ['b', 'c'] })
+  expect(r.conflicts).toEqual([])
+  expect(r.merged.tags).toEqual(['a', 'b', 'c'])
+})
 ```
 
 ```js
@@ -668,6 +730,13 @@ it('rejects garbage', () => {
 it('builds hash url', () => {
   expect(buildSetupUrl('https://x.github.io/meishi-app/', cfg)).toMatch(/^https:\/\/x\.github\.io\/meishi-app\/#\/setup\?c=[\w-]+$/)
 })
+it('trims values', () => {
+  expect(decodeSetup(encodeSetup({ gh: 'github_pat_abc\r', repo: ' me/meishi-data\n', gk: 'AQ.xyz ' }))).toEqual(cfg)
+})
+it('rejects path-like repo', () => {
+  expect(() => decodeSetup(encodeSetup({ ...cfg, repo: '../x' }))).toThrow()
+  expect(() => decodeSetup(encodeSetup({ ...cfg, repo: 'me/..' }))).toThrow()
+})
 ```
 
 ```js
@@ -681,17 +750,37 @@ it('vcard', () => {
   const v = toVCard(card, 'ABC商事')
   expect(v).toContain('BEGIN:VCARD\r\nVERSION:3.0')
   expect(v).toContain('FN:山田 太郎')
-  expect(v).toContain('ORG:ABC商事;営業本部 第一営業部')
+  expect(v).toContain('ORG:ABC商事;営業本部;第一営業部')
+  expect(v).toContain('N:山田;太郎;;;')
+  expect(v).toContain('X-PHONETIC-LAST-NAME:やまだ')
+  expect(v).toContain('X-PHONETIC-FIRST-NAME:たろう')
   expect(v).toContain('TEL;TYPE=CELL:090-1')
   expect(v).toContain('TEL;TYPE=WORK:03-2')
   expect(v).toContain('ADR;TYPE=WORK:;;東京\\, 千代田;;;;')
   expect(v).toContain('NOTE:m\\;x')
   expect(v.endsWith('END:VCARD\r\n')).toBe(true)
 })
+it('vcard: fax type, no-space name, no line injection', () => {
+  const v = toVCard({ ...card, name: '山田', nameKana: 'やまだ', phones: [{ type: 'fax', value: '03-9' }, { type: 'office', value: '1\nEND:VCARD\nFN:x' }], memo: 'a\r\nb' }, 'X')
+  expect(v).toContain('TEL;TYPE=WORK,FAX:03-9')
+  expect(v).toContain('N:山田;;;;')
+  expect(v).toContain('X-PHONETIC-LAST-NAME:やまだ')
+  expect(v).not.toContain('X-PHONETIC-FIRST-NAME')
+  expect(v).toContain('NOTE:a\\nb')
+  expect(v.split('\r\n').filter(l => l === 'END:VCARD')).toHaveLength(1)
+  expect(v.split('\r\n')).not.toContain('FN:x')
+})
 it('csv with BOM and quoting', () => {
-  const c = toCsv([card], { '1': 'ABC "商事"' })
-  expect(c.startsWith('\uFEFF')).toBe(true)
+  const c = toCsv([card], () => 'ABC "商事"')
+  expect(c.startsWith('﻿')).toBe(true)
   expect(c).toContain('"ABC ""商事"""')
+})
+it('csv neutralises formulas and falls back to companyRaw', () => {
+  const c = toCsv([{ ...card, name: '=HYPERLINK(1)', nameKana: '+1', nameLatin: '@SUM(1)', companyRaw: 'Raw Co' }], () => '')
+  expect(c).toContain('"\'=HYPERLINK(1)"')
+  expect(c).toContain('"\'+1"')
+  expect(c).toContain('"\'@SUM(1)"')
+  expect(c).toContain('"Raw Co"')
 })
 ```
 
@@ -711,6 +800,7 @@ export function merge3(base, local, remote) {
     if (eq(l, r)) merged[k] = l
     else if (base && eq(l, b)) merged[k] = r
     else if (base && eq(r, b)) merged[k] = l
+    else if (k === 'tags' && Array.isArray(l) && Array.isArray(r)) merged[k] = [...l, ...r.filter(x => !l.includes(x))]
     else { conflicts.push(k); merged[k] = l }
   }
   return { merged, conflicts }
@@ -720,30 +810,42 @@ export function merge3(base, local, remote) {
 ```js
 // src/lib/setupLink.js
 import { toB64url, fromB64url } from './b64.js'
-export function encodeSetup({ gh, repo, gk }) { return toB64url(JSON.stringify({ v: 1, gh, repo, gk })) }
+export function encodeSetup({ gh, repo, gk }) { return toB64url(JSON.stringify({ v: 1, gh: gh.trim(), repo: repo.trim(), gk: gk.trim() })) }
 export function decodeSetup(c) {
   let o
   try { o = JSON.parse(fromB64url(c)) } catch { throw new Error('invalid_setup') }
-  if (o?.v !== 1 || typeof o.gh !== 'string' || !o.gh || typeof o.gk !== 'string' || !o.gk ||
-      !/^[\w.-]+\/[\w.-]+$/.test(o.repo || '')) throw new Error('invalid_setup')
-  return { gh: o.gh, repo: o.repo, gk: o.gk }
+  if (o?.v !== 1 || typeof o.gh !== 'string' || typeof o.gk !== 'string' || typeof o.repo !== 'string') throw new Error('invalid_setup')
+  const gh = o.gh.trim(), repo = o.repo.trim(), gk = o.gk.trim()
+  if (!gh || !gk || !/^[\w-][\w.-]*\/[\w-][\w.-]*$/.test(repo)) throw new Error('invalid_setup')
+  return { gh, repo, gk }
 }
 export const buildSetupUrl = (base, cfg) => `${base.replace(/\/?$/, '/')}#/setup?c=${encodeSetup(cfg)}`
 ```
 
 ```js
 // src/lib/vcard.js
-const esc = s => String(s ?? '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1')
-const TEL = { mobile: 'CELL', office: 'WORK', fax: 'FAX' }
+const esc = s => String(s ?? '').replace(/\\/g, '\\\\').replace(/\r\n|\r|\n/g, '\\n').replace(/([,;])/g, '\\$1')
+const raw = s => String(s ?? '').replace(/[\r\n]+/g, '')
+const TEL = { mobile: 'CELL', office: 'WORK', fax: 'WORK,FAX' }
+const splitName = s => {
+  const t = String(s ?? '').trim()
+  const i = t.search(/[ \u3000]/)
+  return i < 0 ? [t, ''] : [t.slice(0, i), t.slice(i + 1).trim()]
+}
 export function toVCard(card, companyName = '') {
-  const L = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${esc(card.name)}`, `N:${esc(card.name)};;;;`]
-  if (card.nameKana) L.push(`X-PHONETIC-FIRST-NAME:${esc(card.nameKana)}`)
-  if (companyName || card.deptPath?.length) L.push(`ORG:${esc(companyName)};${esc((card.deptPath || []).join(' '))}`)
+  const [fam, giv] = splitName(card.name)
+  const L = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${esc(card.name)}`, `N:${esc(fam)};${esc(giv)};;;`]
+  if (card.nameKana) {
+    const [kf, kg] = splitName(card.nameKana)
+    L.push(`X-PHONETIC-LAST-NAME:${esc(kf)}`)
+    if (kg) L.push(`X-PHONETIC-FIRST-NAME:${esc(kg)}`)
+  }
+  if (companyName || card.deptPath?.length) L.push(['ORG:' + esc(companyName), ...(card.deptPath || []).map(esc)].join(';'))
   if (card.title) L.push(`TITLE:${esc(card.title)}`)
-  for (const p of card.phones || []) L.push(`TEL;TYPE=${TEL[p.type] || 'VOICE'}:${p.value}`)
-  for (const e of card.emails || []) L.push(`EMAIL;TYPE=INTERNET:${e}`)
+  for (const p of card.phones || []) L.push(`TEL;TYPE=${TEL[p.type] || 'VOICE'}:${raw(p.value)}`)
+  for (const e of card.emails || []) L.push(`EMAIL;TYPE=INTERNET:${raw(e)}`)
   if (card.address) L.push(`ADR;TYPE=WORK:;;${esc(card.address)};;;;`)
-  if (card.website) L.push(`URL:${card.website}`)
+  if (card.website) L.push(`URL:${raw(card.website)}`)
   if (card.memo) L.push(`NOTE:${esc(card.memo)}`)
   L.push('END:VCARD')
   return L.join('\r\n') + '\r\n'
@@ -754,9 +856,14 @@ export const toVCards = (cards, companyNameOf) => cards.map(c => toVCard(c, comp
 ```js
 // src/lib/csv.js
 const COLS = ['name', 'nameKana', 'nameLatin', 'company', 'dept', 'title', 'rank', 'phones', 'emails', 'address', 'website', 'tags', 'metAt', 'metPlace', 'memo']
-const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`
-export function toCsv(cards, companyNameById) {
-  const rows = cards.map(c => [c.name, c.nameKana, c.nameLatin, companyNameById[c.id] ?? '', (c.deptPath || []).join(' / '),
+// neutralise spreadsheet formula injection, then quote
+const q = v => {
+  let s = String(v ?? '')
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s
+  return `"${s.replace(/"/g, '""')}"`
+}
+export function toCsv(cards, companyNameOf = () => '') {
+  const rows = cards.map(c => [c.name, c.nameKana, c.nameLatin, companyNameOf(c) || c.companyRaw || '', (c.deptPath || []).join(' / '),
     c.title, c.rank, (c.phones || []).map(p => `${p.type}:${p.value}`).join(' | '), (c.emails || []).join(' | '), c.address,
     c.website, (c.tags || []).join(' | '), c.metAt, c.metPlace, c.memo].map(q).join(','))
   return '\uFEFF' + [COLS.join(','), ...rows].join('\r\n') + '\r\n'

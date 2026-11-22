@@ -1,6 +1,9 @@
 // src/lib/orgChart.js
 import { normalizeDept } from './normalize.js'
-const byRank = (a, b) => (a.rank - b.rank) || (a.name || '').localeCompare(b.name || '', 'ja')
+const SEP = '\u001f'
+const rk = p => (typeof p.rank === 'number' && Number.isFinite(p.rank) ? p.rank : 7)
+const byRank = (a, b) => (rk(a) - rk(b)) || (a.name || '').localeCompare(b.name || '', 'ja')
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const node = (name, key, parent, unknown = false) => ({ name, key, parent, unknown, children: [], people: [], head: null, total: 0 })
 
 export function buildOrg(people, deptAliases = {}) {
@@ -9,42 +12,58 @@ export function buildOrg(people, deptAliases = {}) {
   const where = new Map()
   const byId = new Map(people.map(p => [p.id, p]))
   for (const p of people) {
-    const path = (p.deptPath || []).map(d => alias.get(normalizeDept(d)) ?? d).filter(Boolean)
+    const path = (p.deptPath || []).map(d => alias.get(normalizeDept(d)) ?? d).filter(d => normalizeDept(d))
     let n = root
-    if (!path.length && p.rank >= 3) {
+    if (!path.length && rk(p) >= 3) {
       n = root.children.find(c => c.unknown) || (root.children.push(node(null, '?', root, true)), root.children.at(-1))
     }
     for (const seg of path) {
-      const key = n.key ? `${n.key}/${seg}` : seg
+      const nk = normalizeDept(seg)
+      const key = n.key ? `${n.key}${SEP}${nk}` : nk
       let c = n.children.find(x => x.key === key)
-      if (!c) { c = node(seg, key, n); n.children.push(c) }
+      if (!c) { c = node(seg.trim(), key, n); n.children.push(c) }
       n = c
     }
     n.people.push(p); where.set(p.id, n)
   }
   ;(function fin(n) {
     n.people.sort(byRank); n.head = n.people[0] || null
-    n.children.sort((a, b) => (a.unknown - b.unknown) || ((a.name || '') < (b.name || '') ? -1 : (a.name || '') > (b.name || '') ? 1 : 0))
+    n.children.sort((a, b) => (a.unknown - b.unknown) || cmp(a.name || '', b.name || ''))
     n.total = n.people.length + n.children.reduce((s, c) => s + fin(c), 0)
     return n.total
   })(root)
 
   function inferredBoss(p) {
     const n = where.get(p.id)
-    if (n.head && n.head.id !== p.id && n.head.rank < p.rank) return n.head
-    for (let a = n.parent; a; a = a.parent) if (a.head && a.head.id !== p.id) return a.head
+    if (!n.unknown && n.head && n.head.id !== p.id && rk(n.head) < rk(p)) return n.head
+    for (let a = n.parent; a; a = a.parent) if (!a.unknown && a.head && a.head.id !== p.id) return a.head
     return null
   }
-  function bossOf(p, explicit = true) {
-    if (explicit && p.reportsTo && byId.has(p.reportsTo) && p.reportsTo !== p.id) return byId.get(p.reportsTo)
-    return inferredBoss(p)
+  // explicit reportsTo edges that are accepted (no cycle, not pointing at a subordinate)
+  const explicit = new Map()
+  const bossOf = p => (explicit.has(p.id) ? byId.get(explicit.get(p.id)) : inferredBoss(p))
+  const validTarget = p => (p.reportsTo && p.reportsTo !== p.id && byId.has(p.reportsTo) ? p.reportsTo : null)
+  const onCycle = new Set()
+  for (const p of people) {
+    const seen = new Set([p.id])
+    for (let t = validTarget(p); t; t = validTarget(byId.get(t))) {
+      if (t === p.id) { onCycle.add(p.id); break }
+      if (seen.has(t)) break
+      seen.add(t)
+    }
+  }
+  for (const p of people) {
+    const t = validTarget(p)
+    if (!t || onCycle.has(p.id)) continue
+    let sub = false
+    for (let c = byId.get(t), i = 0; c && i <= people.length; c = bossOf(c), i++) if (c.id === p.id) { sub = true; break }
+    if (!sub) explicit.set(p.id, t)
   }
   function chain(id) {
     const start = byId.get(id); if (!start) return []
     const out = [start]; const seen = new Set([id])
     for (let cur = start; ;) {
-      let b = bossOf(cur)
-      if (b && seen.has(b.id)) b = bossOf(cur, false)
+      const b = bossOf(cur)
       if (!b || seen.has(b.id)) break
       out.push(b); seen.add(b.id); cur = b
     }

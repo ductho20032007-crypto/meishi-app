@@ -9,6 +9,7 @@ export function merge3(base, local, remote) {
     if (eq(l, r)) merged[k] = l
     else if (base && eq(l, b)) merged[k] = r
     else if (base && eq(r, b)) merged[k] = l
+    else if (k === 'tags' && Array.isArray(l) && Array.isArray(r)) merged[k] = [...l, ...r.filter(x => !l.includes(x))]
     else { conflicts.push(k); merged[k] = l }
   }
   return { merged, conflicts }

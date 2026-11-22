@@ -14,3 +14,8 @@ it('reports same-field conflicts', () => {
 it('no base: identical fields fine, differing fields conflict', () => {
   expect(merge3(null, { a: 1, b: 2 }, { a: 1, b: 3 }).conflicts).toEqual(['b'])
 })
+it('unions tags when both sides changed', () => {
+  const r = merge3(base, { ...base, tags: ['a', 'b'] }, { ...base, tags: ['b', 'c'] })
+  expect(r.conflicts).toEqual([])
+  expect(r.merged.tags).toEqual(['a', 'b', 'c'])
+})

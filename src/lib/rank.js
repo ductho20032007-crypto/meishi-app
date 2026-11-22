@@ -27,6 +27,20 @@ const pick = (a, b, t) => {
   return b.entry.rank < a.entry.rank ? b : a
 }
 export function matchTitle(title) {
+  const raw0 = (title || '').normalize('NFKC')
+  if (raw0.includes('兼')) {
+    // concurrent posts ("次長兼課長"): evaluate each part, the highest post wins; ties -> part with an entry, then the first
+    const parts = raw0.split('兼').map(x => x.trim()).filter(Boolean)
+    if (parts.length > 1) {
+      return parts.map(matchOne).reduce((a, b) => {
+        if (b.rank !== a.rank) return b.rank < a.rank ? b : a
+        return !a.entry && b.entry ? b : a
+      })
+    }
+  }
+  return matchOne(title)
+}
+function matchOne(title) {
   const t = (title || '').normalize('NFKC').replace(/\s/g, '')
   if (!t) return { entry: null, rank: 7 }
   const hits = VARIANTS.filter(v => t.includes(v.key))
@@ -39,13 +53,6 @@ export function matchTitle(title) {
         if (a.entry.rank !== b.entry.rank) return b.entry.rank < a.entry.rank ? b : a
         const sa = t.endsWith(a.key), sb = t.endsWith(b.key)
         if (sa !== sb) return sb ? b : a
-        return b.key.length > a.key.length ? b : a
-      }, null)
-    } else if (t.includes('兼')) {
-      // concurrent posts ("次長兼課長"): the higher post (lowest rank number) wins; ties -> longest
-      best = hits.reduce((a, b) => {
-        if (!a) return b
-        if (a.entry.rank !== b.entry.rank) return b.entry.rank < a.entry.rank ? b : a
         return b.key.length > a.key.length ? b : a
       }, null)
     } else {

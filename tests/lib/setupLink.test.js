@@ -10,3 +10,10 @@ it('rejects garbage', () => {
 it('builds hash url', () => {
   expect(buildSetupUrl('https://x.github.io/meishi-app/', cfg)).toMatch(/^https:\/\/x\.github\.io\/meishi-app\/#\/setup\?c=[\w-]+$/)
 })
+it('trims values', () => {
+  expect(decodeSetup(encodeSetup({ gh: 'github_pat_abc\r', repo: ' me/meishi-data\n', gk: 'AQ.xyz ' }))).toEqual(cfg)
+})
+it('rejects path-like repo', () => {
+  expect(() => decodeSetup(encodeSetup({ ...cfg, repo: '../x' }))).toThrow()
+  expect(() => decodeSetup(encodeSetup({ ...cfg, repo: 'me/..' }))).toThrow()
+})
