@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createGemini, mergeOcr, sanitizeOcr } from '../../src/services/gemini.js'
+import { createGemini, mergeOcr, sanitizeOcr, DEFAULT_MODELS, THINKING_CONFIG } from '../../src/services/gemini.js'
 const ok = obj => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] }), { status: 200 })
 describe('gemini', () => {
   it('sends images + schema and parses JSON', async () => {
@@ -27,4 +27,57 @@ describe('gemini', () => {
     const m = mergeOcr(card, { name: 'N', phones: [{ type: 'mobile', value: '1' }], memo: 'ignored' })
     expect(m).toMatchObject({ name: 'N', memo: 'm', tags: ['t'], status: 'done', ocrBy: 'gemini', ocrError: null })
   })
+})
+
+const err = (status, message) => new Response(JSON.stringify({ error: { message } }), { status })
+const card = { name: 'N', title: '課長', deptPath: [], rank: 5 }
+const modelOf = c => c[0].match(/models\/([^:]+):/)[1]
+describe('gemini fallback / retry', () => {
+  const sleep = vi.fn().mockResolvedValue()
+  it('falls back to the next model after busy + one retry', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(err(503, 'high demand')).mockResolvedValueOnce(err(503, 'high demand'))
+      .mockResolvedValueOnce(ok(card))
+    const g = createGemini({ key: 'K', fetch, sleep })
+    expect((await g.extract([])).name).toBe('N')
+    expect(fetch.mock.calls.map(modelOf)).toEqual([DEFAULT_MODELS[0], DEFAULT_MODELS[0], DEFAULT_MODELS[1]])
+    expect(sleep).toHaveBeenCalledTimes(1)
+  })
+  it('retries once on busy before success', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(err(503, 'x')).mockResolvedValueOnce(ok(card))
+    await createGemini({ key: 'K', fetch, sleep }).extract([])
+    expect(fetch.mock.calls.map(modelOf)).toEqual([DEFAULT_MODELS[0], DEFAULT_MODELS[0]])
+  })
+  it('moves on when a model is not found / no longer available', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(err(404, 'models/x is not found')).mockResolvedValueOnce(err(400, 'This model is no longer available to new users')).mockResolvedValueOnce(ok(card))
+    const g = createGemini({ key: 'K', fetch, sleep })
+    expect((await g.extract([])).name).toBe('N')
+    expect(fetch.mock.calls.map(modelOf)).toEqual(DEFAULT_MODELS)
+  })
+  it('retries without thinkingConfig when unsupported', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(err(400, 'Thinking level is not supported for this model')).mockImplementation(async () => ok(card))
+    const g = createGemini({ key: 'K', model: 'm1', fetch, sleep })
+    await g.extract([]); await g.extract([])
+    const bodies = fetch.mock.calls.map(c => JSON.parse(c[1].body).generationConfig)
+    expect(bodies[0].thinkingConfig).toEqual(THINKING_CONFIG)
+    expect(bodies[1].thinkingConfig).toBeUndefined()
+    expect(bodies[2].thinkingConfig).toBeUndefined()
+  })
+  it('rejects with kind busy when every model is busy', async () => {
+    const fetch = vi.fn().mockImplementation(async () => err(503, 'high demand'))
+    await expect(createGemini({ key: 'K', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'busy' })
+    expect(fetch).toHaveBeenCalledTimes(DEFAULT_MODELS.length * 2)
+  })
+  it('explicit model disables the fallback list', async () => {
+    const fetch = vi.fn().mockImplementation(async () => err(503, 'x'))
+    await expect(createGemini({ key: 'K', model: 'mine', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'busy' })
+    expect(new Set(fetch.mock.calls.map(modelOf))).toEqual(new Set(['mine']))
+  })
+})
+it('falls back on per-model quota (429) and keeps kind quota if all fail', async () => {
+  const sleep = vi.fn()
+  const f1 = vi.fn().mockImplementationOnce(async () => err(429, 'quota')).mockImplementation(async () => ok(card))
+  expect((await createGemini({ key: 'K', fetch: f1, sleep }).extract([])).name).toBe('N')
+  const f2 = vi.fn().mockImplementation(async () => err(429, 'quota'))
+  await expect(createGemini({ key: 'K', fetch: f2, sleep }).extract([])).rejects.toMatchObject({ kind: 'quota' })
 })

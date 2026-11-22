@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { loadEnv } from './env.mjs'
 import { createGemini } from '../src/services/gemini.js'
 const env = loadEnv()
-const g = createGemini({ key: env.MEISHI_GEMINI_KEY, model: process.argv[2] || 'gemini-flash-latest' })
+const g = createGemini({ key: env.MEISHI_GEMINI_KEY, model: process.argv[2] || undefined })
 const dir = new URL('../tests/fixtures/cards/', import.meta.url)
 for (const f of readdirSync(dir).filter(f => /\.(png|jpe?g)$/i.test(f))) {
   const data = readFileSync(new URL(f, dir)).toString('base64')

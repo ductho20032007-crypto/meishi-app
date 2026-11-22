@@ -899,7 +899,7 @@ it('stores and clears keys', () => {
   expect(hasKeys()).toBe(false)
   saveKeys({ gh: 't', repo: 'me/d', gk: 'k' })
   expect(hasKeys()).toBe(true)
-  expect(getConfig()).toMatchObject({ gh: 't', repo: 'me/d', gk: 'k', model: 'gemini-flash-latest' })
+  expect(getConfig()).toMatchObject({ gh: 't', repo: 'me/d', gk: 'k', model: '' })
   setPref('model', 'gemini-3.5-flash'); expect(getConfig().model).toBe('gemini-3.5-flash')
   clearKeys(); expect(hasKeys()).toBe(false); expect(getConfig().model).toBe('gemini-3.5-flash')
 })
@@ -914,7 +914,7 @@ it('stores and clears keys', () => {
 const K = { gh: 'meishi.gh', repo: 'meishi.repo', gk: 'meishi.gk', model: 'meishi.model', lang: 'meishi.lang' }
 const get = k => { try { return localStorage.getItem(k) } catch { return null } }
 const set = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v) } catch {} }
-export const DEFAULT_MODEL = 'gemini-flash-latest'
+export const DEFAULT_MODEL = '' // '' = automatic (fallback list in gemini.js)
 export function getConfig() {
   return { gh: get(K.gh), repo: get(K.repo), gk: get(K.gk), model: get(K.model) || DEFAULT_MODEL, lang: get(K.lang) }
 }
@@ -1518,7 +1518,7 @@ export function createSync({ db, gh }) {
 
 ```js
 import { describe, it, expect, vi } from 'vitest'
-import { createGemini, mergeOcr, sanitizeOcr } from '../../src/services/gemini.js'
+import { createGemini, mergeOcr, sanitizeOcr, DEFAULT_MODELS, THINKING_CONFIG } from '../../src/services/gemini.js'
 const ok = obj => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] }), { status: 200 })
 describe('gemini', () => {
   it('sends images + schema and parses JSON', async () => {
@@ -1547,6 +1547,59 @@ describe('gemini', () => {
     expect(m).toMatchObject({ name: 'N', memo: 'm', tags: ['t'], status: 'done', ocrBy: 'gemini', ocrError: null })
   })
 })
+
+const err = (status, message) => new Response(JSON.stringify({ error: { message } }), { status })
+const card = { name: 'N', title: '課長', deptPath: [], rank: 5 }
+const modelOf = c => c[0].match(/models\/([^:]+):/)[1]
+describe('gemini fallback / retry', () => {
+  const sleep = vi.fn().mockResolvedValue()
+  it('falls back to the next model after busy + one retry', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(err(503, 'high demand')).mockResolvedValueOnce(err(503, 'high demand'))
+      .mockResolvedValueOnce(ok(card))
+    const g = createGemini({ key: 'K', fetch, sleep })
+    expect((await g.extract([])).name).toBe('N')
+    expect(fetch.mock.calls.map(modelOf)).toEqual([DEFAULT_MODELS[0], DEFAULT_MODELS[0], DEFAULT_MODELS[1]])
+    expect(sleep).toHaveBeenCalledTimes(1)
+  })
+  it('retries once on busy before success', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(err(503, 'x')).mockResolvedValueOnce(ok(card))
+    await createGemini({ key: 'K', fetch, sleep }).extract([])
+    expect(fetch.mock.calls.map(modelOf)).toEqual([DEFAULT_MODELS[0], DEFAULT_MODELS[0]])
+  })
+  it('moves on when a model is not found / no longer available', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(err(404, 'models/x is not found')).mockResolvedValueOnce(err(400, 'This model is no longer available to new users')).mockResolvedValueOnce(ok(card))
+    const g = createGemini({ key: 'K', fetch, sleep })
+    expect((await g.extract([])).name).toBe('N')
+    expect(fetch.mock.calls.map(modelOf)).toEqual(DEFAULT_MODELS)
+  })
+  it('retries without thinkingConfig when unsupported', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(err(400, 'Thinking level is not supported for this model')).mockImplementation(async () => ok(card))
+    const g = createGemini({ key: 'K', model: 'm1', fetch, sleep })
+    await g.extract([]); await g.extract([])
+    const bodies = fetch.mock.calls.map(c => JSON.parse(c[1].body).generationConfig)
+    expect(bodies[0].thinkingConfig).toEqual(THINKING_CONFIG)
+    expect(bodies[1].thinkingConfig).toBeUndefined()
+    expect(bodies[2].thinkingConfig).toBeUndefined()
+  })
+  it('rejects with kind busy when every model is busy', async () => {
+    const fetch = vi.fn().mockImplementation(async () => err(503, 'high demand'))
+    await expect(createGemini({ key: 'K', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'busy' })
+    expect(fetch).toHaveBeenCalledTimes(DEFAULT_MODELS.length * 2)
+  })
+  it('explicit model disables the fallback list', async () => {
+    const fetch = vi.fn().mockImplementation(async () => err(503, 'x'))
+    await expect(createGemini({ key: 'K', model: 'mine', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'busy' })
+    expect(new Set(fetch.mock.calls.map(modelOf))).toEqual(new Set(['mine']))
+  })
+})
+it('falls back on per-model quota (429) and keeps kind quota if all fail', async () => {
+  const sleep = vi.fn()
+  const f1 = vi.fn().mockImplementationOnce(async () => err(429, 'quota')).mockImplementation(async () => ok(card))
+  expect((await createGemini({ key: 'K', fetch: f1, sleep }).extract([])).name).toBe('N')
+  const f2 = vi.fn().mockImplementation(async () => err(429, 'quota'))
+  await expect(createGemini({ key: 'K', fetch: f2, sleep }).extract([])).rejects.toMatchObject({ kind: 'quota' })
+})
 ```
 
 - [ ] **Step 2:** run → FAIL.
@@ -1554,6 +1607,7 @@ describe('gemini', () => {
 - [ ] **Step 3: implementation**
 
 ```js
+// src/services/gemini.js
 // src/services/gemini.js
 import { rankFor } from '../lib/rank.js'
 export class GeminiError extends Error { constructor(kind, status, message) { super(message); this.kind = kind; this.status = status } }
@@ -1579,27 +1633,60 @@ Rules:
 - phones: type mobile for 携帯/mobile/di động or numbers starting 070/080/090; fax for FAX; otherwise office.
 - Unknown fields: "" or [].`
 
-export function createGemini({ key, model = 'gemini-flash-latest', fetch = globalThis.fetch.bind(globalThis) }) {
+export const DEFAULT_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.5-flash']
+// Reduce "thinking" for speed (OCR needs no reasoning). Sent only when the model accepts it.
+export const THINKING_CONFIG = { thinkingLevel: 'low' }
+const MISSING = /not found|no longer available|not supported for generateContent/i
+const BUSY = /UNAVAILABLE|high demand|overloaded/i
+const sleepMs = ms => new Promise(r => setTimeout(r, ms))
+
+export function createGemini({ key, model, fetch = globalThis.fetch.bind(globalThis), sleep = sleepMs, retryDelay = 2000 }) {
   const base = 'https://generativelanguage.googleapis.com/v1beta'
+  const models = Array.isArray(model) && model.length ? model : model ? [model] : DEFAULT_MODELS
+  const noThinking = new Set()
   async function call(url, init) {
     let r
     try { r = await fetch(url, { ...init, headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' } }) }
     catch (e) { throw new GeminiError('network', 0, e.message) }
     if (r.ok) return r.json()
-    const msg = (await r.json().catch(() => ({})))?.error?.message || r.statusText
-    const kind = r.status === 429 ? 'quota' : [400, 401, 403].includes(r.status) ? 'auth' : 'other'
+    const msg = (await r.json().catch(() => ({})))?.error?.message || r.statusText || ''
+    const kind = r.status === 503 || BUSY.test(msg) ? 'busy'
+      : r.status === 404 || MISSING.test(msg) ? 'model'
+      : r.status === 429 ? 'quota'
+      : [400, 401, 403].includes(r.status) ? 'auth' : 'other'
     throw new GeminiError(kind, r.status, msg)
+  }
+  async function generate(m, images) {
+    const gc = { responseMimeType: 'application/json', responseSchema: OCR_SCHEMA, temperature: 0 }
+    if (!noThinking.has(m)) gc.thinkingConfig = THINKING_CONFIG
+    const body = { contents: [{ role: 'user', parts: [{ text: OCR_PROMPT }, ...images.map(i => ({ inlineData: { mimeType: i.mimeType, data: i.data } }))] }], generationConfig: gc }
+    try { return await call(`${base}/models/${m}:generateContent`, { method: 'POST', body: JSON.stringify(body) }) }
+    catch (e) {
+      if (gc.thinkingConfig && e.status === 400 && /thinking/i.test(e.message)) { noThinking.add(m); return generate(m, images) }
+      throw e
+    }
+  }
+  async function withRetry(m, images) {
+    try { return await generate(m, images) }
+    catch (e) { if (e.kind !== 'busy') throw e; await sleep(retryDelay); return generate(m, images) }
   }
   return {
     ping: () => call(`${base}/models?pageSize=1`, { method: 'GET' }),
     async extract(images) {
-      const body = {
-        contents: [{ role: 'user', parts: [{ text: OCR_PROMPT }, ...images.map(i => ({ inlineData: { mimeType: i.mimeType, data: i.data } }))] }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: OCR_SCHEMA, temperature: 0 }
+      let busy = null, quota = null, last = null
+      for (const m of models) {
+        try {
+          const j = await withRetry(m, images)
+          const text = j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('')
+          try { return sanitizeOcr(JSON.parse(text)) } catch { throw new GeminiError('bad_response', 200, 'unparseable response') }
+        } catch (e) {
+          if (e.kind === 'busy') busy = e
+          else if (e.kind === 'quota') quota = e // quotas are per model: try the next one
+          else if (e.kind !== 'model') throw e
+          last = e
+        }
       }
-      const j = await call(`${base}/models/${model}:generateContent`, { method: 'POST', body: JSON.stringify(body) })
-      const text = j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('')
-      try { return sanitizeOcr(JSON.parse(text)) } catch { throw new GeminiError('bad_response', 200, 'unparseable response') }
+      throw busy || quota || last
     }
   }
 }
@@ -1671,7 +1758,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { loadEnv } from './env.mjs'
 import { createGemini } from '../src/services/gemini.js'
 const env = loadEnv()
-const g = createGemini({ key: env.MEISHI_GEMINI_KEY, model: process.argv[2] || 'gemini-flash-latest' })
+const g = createGemini({ key: env.MEISHI_GEMINI_KEY, model: process.argv[2] || undefined })
 const dir = new URL('../tests/fixtures/cards/', import.meta.url)
 for (const f of readdirSync(dir).filter(f => /\.(png|jpe?g)$/i.test(f))) {
   const data = readFileSync(new URL(f, dir)).toString('base64')

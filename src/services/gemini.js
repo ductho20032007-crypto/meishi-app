@@ -23,27 +23,60 @@ Rules:
 - phones: type mobile for 携帯/mobile/di động or numbers starting 070/080/090; fax for FAX; otherwise office.
 - Unknown fields: "" or [].`
 
-export function createGemini({ key, model = 'gemini-flash-latest', fetch = globalThis.fetch.bind(globalThis) }) {
+export const DEFAULT_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.5-flash']
+// Reduce "thinking" for speed (OCR needs no reasoning). Sent only when the model accepts it.
+export const THINKING_CONFIG = { thinkingLevel: 'low' }
+const MISSING = /not found|no longer available|not supported for generateContent/i
+const BUSY = /UNAVAILABLE|high demand|overloaded/i
+const sleepMs = ms => new Promise(r => setTimeout(r, ms))
+
+export function createGemini({ key, model, fetch = globalThis.fetch.bind(globalThis), sleep = sleepMs, retryDelay = 2000 }) {
   const base = 'https://generativelanguage.googleapis.com/v1beta'
+  const models = Array.isArray(model) && model.length ? model : model ? [model] : DEFAULT_MODELS
+  const noThinking = new Set()
   async function call(url, init) {
     let r
     try { r = await fetch(url, { ...init, headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' } }) }
     catch (e) { throw new GeminiError('network', 0, e.message) }
     if (r.ok) return r.json()
-    const msg = (await r.json().catch(() => ({})))?.error?.message || r.statusText
-    const kind = r.status === 429 ? 'quota' : [400, 401, 403].includes(r.status) ? 'auth' : 'other'
+    const msg = (await r.json().catch(() => ({})))?.error?.message || r.statusText || ''
+    const kind = r.status === 503 || BUSY.test(msg) ? 'busy'
+      : r.status === 404 || MISSING.test(msg) ? 'model'
+      : r.status === 429 ? 'quota'
+      : [400, 401, 403].includes(r.status) ? 'auth' : 'other'
     throw new GeminiError(kind, r.status, msg)
+  }
+  async function generate(m, images) {
+    const gc = { responseMimeType: 'application/json', responseSchema: OCR_SCHEMA, temperature: 0 }
+    if (!noThinking.has(m)) gc.thinkingConfig = THINKING_CONFIG
+    const body = { contents: [{ role: 'user', parts: [{ text: OCR_PROMPT }, ...images.map(i => ({ inlineData: { mimeType: i.mimeType, data: i.data } }))] }], generationConfig: gc }
+    try { return await call(`${base}/models/${m}:generateContent`, { method: 'POST', body: JSON.stringify(body) }) }
+    catch (e) {
+      if (gc.thinkingConfig && e.status === 400 && /thinking/i.test(e.message)) { noThinking.add(m); return generate(m, images) }
+      throw e
+    }
+  }
+  async function withRetry(m, images) {
+    try { return await generate(m, images) }
+    catch (e) { if (e.kind !== 'busy') throw e; await sleep(retryDelay); return generate(m, images) }
   }
   return {
     ping: () => call(`${base}/models?pageSize=1`, { method: 'GET' }),
     async extract(images) {
-      const body = {
-        contents: [{ role: 'user', parts: [{ text: OCR_PROMPT }, ...images.map(i => ({ inlineData: { mimeType: i.mimeType, data: i.data } }))] }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: OCR_SCHEMA, temperature: 0 }
+      let busy = null, quota = null, last = null
+      for (const m of models) {
+        try {
+          const j = await withRetry(m, images)
+          const text = j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('')
+          try { return sanitizeOcr(JSON.parse(text)) } catch { throw new GeminiError('bad_response', 200, 'unparseable response') }
+        } catch (e) {
+          if (e.kind === 'busy') busy = e
+          else if (e.kind === 'quota') quota = e // quotas are per model: try the next one
+          else if (e.kind !== 'model') throw e
+          last = e
+        }
       }
-      const j = await call(`${base}/models/${model}:generateContent`, { method: 'POST', body: JSON.stringify(body) })
-      const text = j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('')
-      try { return sanitizeOcr(JSON.parse(text)) } catch { throw new GeminiError('bad_response', 200, 'unparseable response') }
+      throw busy || quota || last
     }
   }
 }
