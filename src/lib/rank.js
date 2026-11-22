@@ -41,6 +41,13 @@ export function matchTitle(title) {
         if (sa !== sb) return sb ? b : a
         return b.key.length > a.key.length ? b : a
       }, null)
+    } else if (t.includes('兼')) {
+      // concurrent posts ("次長兼課長"): the higher post (lowest rank number) wins; ties -> longest
+      best = hits.reduce((a, b) => {
+        if (!a) return b
+        if (a.entry.rank !== b.entry.rank) return b.entry.rank < a.entry.rank ? b : a
+        return b.key.length > a.key.length ? b : a
+      }, null)
     } else {
       best = hits.reduce((a, b) => pick(a, b, t), null)
     }

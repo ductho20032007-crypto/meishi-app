@@ -32,6 +32,9 @@ describe('matchTitle', () => {
   ])('JA tie-break %s', (t, rank, ja) => {
     expect(matchTitle(t)).toMatchObject({ rank, entry: { ja } })
   })
+  it.each([['次長兼課長', 4, '次長'], ['部長兼課長', 4, '部長']])('concurrent post %s', (t, rank, ja) => {
+    expect(matchTitle(t)).toMatchObject({ rank, entry: { ja } })
+  })
   it('deputy prefix lowers rank by one', () => {
     expect(matchTitle('副部長')).toEqual({ entry: null, rank: 5 })
   })

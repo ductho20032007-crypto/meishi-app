@@ -276,6 +276,9 @@ describe('matchTitle', () => {
   ])('JA tie-break %s', (t, rank, ja) => {
     expect(matchTitle(t)).toMatchObject({ rank, entry: { ja } })
   })
+  it.each([['次長兼課長', 4, '次長'], ['部長兼課長', 4, '部長']])('concurrent post %s', (t, rank, ja) => {
+    expect(matchTitle(t)).toMatchObject({ rank, entry: { ja } })
+  })
   it('deputy prefix lowers rank by one', () => {
     expect(matchTitle('副部長')).toEqual({ entry: null, rank: 5 })
   })
@@ -392,6 +395,13 @@ export function matchTitle(title) {
         if (a.entry.rank !== b.entry.rank) return b.entry.rank < a.entry.rank ? b : a
         const sa = t.endsWith(a.key), sb = t.endsWith(b.key)
         if (sa !== sb) return sb ? b : a
+        return b.key.length > a.key.length ? b : a
+      }, null)
+    } else if (t.includes('兼')) {
+      // concurrent posts ("次長兼課長"): the higher post (lowest rank number) wins; ties -> longest
+      best = hits.reduce((a, b) => {
+        if (!a) return b
+        if (a.entry.rank !== b.entry.rank) return b.entry.rank < a.entry.rank ? b : a
         return b.key.length > a.key.length ? b : a
       }, null)
     } else {
