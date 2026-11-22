@@ -973,7 +973,7 @@ describe('github client', () => {
     expect(url).toBe('https://api.github.com/repos/me/d/contents/cards/a.json')
     expect(JSON.parse(init.body)).toMatchObject({ content: 'Zm9v', sha: 'old' })
   })
-  it.each([[401, 'auth'], [404, 'notfound'], [409, 'conflict'], [422, 'conflict']])('maps %i → %s', async (s, kind) => {
+  it.each([[401, 'auth'], [403, 'auth'], [404, 'notfound'], [422, 'conflict']])('maps %i → %s', async (s, kind) => {
     const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(s, { message: 'x' })) })
     await expect(gh.getTree()).rejects.toMatchObject({ kind })
   })
@@ -984,6 +984,47 @@ describe('github client', () => {
   it('network failure → network', async () => {
     const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockRejectedValue(new TypeError('Failed')) })
     await expect(gh.getTree()).rejects.toBeInstanceOf(GitHubError)
+  })
+  it('409 on put maps to conflict', async () => {
+    const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(409, { message: 'x' })) })
+    await expect(gh.putFile('cards/a.json', 'Zm9v', 'old')).rejects.toMatchObject({ kind: 'conflict' })
+  })
+  it('empty repo (409 / "empty") gives empty tree', async () => {
+    const a = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(409, { message: 'Git Repository is empty.' })) })
+    expect(await a.getTree()).toEqual([])
+    const b = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(404, { message: 'repository is empty' })) })
+    expect(await b.getTree()).toEqual([])
+  })
+  it('truncated tree is an error', async () => {
+    const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(200, { tree: [], truncated: true })) })
+    await expect(gh.getTree()).rejects.toMatchObject({ kind: 'other' })
+  })
+  it('sends cache: no-store', async () => {
+    const fetch = vi.fn().mockResolvedValue(res(200, { tree: [] }))
+    await createGitHub({ token: 't', repo: 'me/d', fetch }).getTree()
+    expect(fetch.mock.calls[0][1].cache).toBe('no-store')
+  })
+  describe('rate limit detection', () => {
+    const kindOf = async (status, body, headers) => {
+      const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(status, body, headers)) })
+      return gh.getTree().catch(e => e)
+    }
+    it('429', async () => {
+      const e = await kindOf(429, { message: 'x' })
+      expect(e.kind).toBe('ratelimit'); expect(e.resetAt).toBeGreaterThan(Date.now())
+    })
+    it('403 with retry-after', async () => {
+      const e = await kindOf(403, { message: 'x' }, { 'retry-after': '30' })
+      expect(e.kind).toBe('ratelimit')
+      expect(e.resetAt).toBeGreaterThan(Date.now() + 20000); expect(e.resetAt).toBeLessThan(Date.now() + 40000)
+    })
+    it('403 with abuse / rate limit message', async () => {
+      expect((await kindOf(403, { message: 'You have exceeded a secondary rate limit' })).kind).toBe('ratelimit')
+      expect((await kindOf(403, { message: 'abuse detection' })).kind).toBe('ratelimit')
+    })
+    it('403 otherwise is auth', async () => {
+      expect((await kindOf(403, { message: 'Resource not accessible' })).kind).toBe('auth')
+    })
   })
 })
 ```
@@ -1002,14 +1043,19 @@ export function createGitHub({ token, repo, fetch = globalThis.fetch.bind(global
   async function call(path, init = {}) {
     let r
     try {
-      r = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
+      r = await fetch(base + path, { ...init, cache: 'no-store', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28', ...(init.body ? { 'Content-Type': 'application/json' } : {}) } })
     } catch (e) { throw new GitHubError('network', 0, e.message) }
     if (r.ok) return r.status === 204 ? null : r.json()
     const body = await r.json().catch(() => ({}))
     const msg = body.message || r.statusText
-    if ((r.status === 403 || r.status === 429) && r.headers.get('x-ratelimit-remaining') === '0')
-      throw new GitHubError('ratelimit', r.status, msg, Number(r.headers.get('x-ratelimit-reset')) * 1000)
+    const retryAfter = r.headers.get('retry-after'), reset = r.headers.get('x-ratelimit-reset')
+    const limited = r.status === 429 || (r.status === 403 &&
+      (retryAfter != null || r.headers.get('x-ratelimit-remaining') === '0' || /rate limit|abuse/i.test(msg)))
+    if (limited) {
+      const resetAt = retryAfter != null ? Date.now() + Number(retryAfter) * 1000 : reset ? Number(reset) * 1000 : Date.now() + 60000
+      throw new GitHubError('ratelimit', r.status, msg, resetAt)
+    }
     const kind = { 401: 'auth', 403: 'auth', 404: 'notfound', 409: 'conflict', 422: 'conflict' }[r.status] || 'other'
     throw new GitHubError(kind, r.status, msg)
   }
@@ -1017,7 +1063,10 @@ export function createGitHub({ token, repo, fetch = globalThis.fetch.bind(global
   return {
     ping: () => call(''),
     async getTree() {
-      const t = await call('/git/trees/HEAD?recursive=1')
+      let t
+      try { t = await call('/git/trees/HEAD?recursive=1') }
+      catch (e) { if (e instanceof GitHubError && (e.status === 409 || /empty/i.test(e.message))) return []; throw e }   // empty repo
+      if (t.truncated) throw new GitHubError('other', 200, 'tree truncated')
       return t.tree.filter(e => e.type === 'blob').map(({ path, sha }) => ({ path, sha }))
     },
     async getBlob(sha) { return (await call(`/git/blobs/${sha}`)).content },          // base64
@@ -1044,7 +1093,7 @@ export function createGitHub({ token, repo, fetch = globalThis.fetch.bind(global
 - [ ] **Step 1: test**
 
 ```js
-// @vitest-environment node   (native Blob/arrayBuffer; fake-indexeddb still loaded via setupFiles)
+// @vitest-environment node
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb } from '../../src/services/db.js'
 import { createSync } from '../../src/services/sync.js'
@@ -1060,10 +1109,16 @@ function fakeGh() {
     async getFile(path) { const f = files.get(path); if (!f) throw new GitHubError('notfound', 404, ''); return f },
     async putFile(path, content, sha) {
       const cur = files.get(path)
-      if ((cur && cur.sha !== sha) || (!cur && sha)) throw new GitHubError('conflict', 409, 'sha')
+      if (!cur && sha) throw new GitHubError('notfound', 404, '')
+      if (cur && cur.sha !== sha) throw new GitHubError('conflict', 409, 'sha')
       const s = `s${++n}`; files.set(path, { sha: s, content }); return s
     },
-    async deleteFile(path, sha) { if (files.get(path)?.sha !== sha) throw new GitHubError('conflict', 409, ''); files.delete(path) }
+    async deleteFile(path, sha) {
+      const cur = files.get(path)
+      if (!cur) throw new GitHubError('notfound', 404, '')
+      if (cur.sha !== sha) throw new GitHubError('conflict', 409, '')
+      files.delete(path)
+    }
   }
 }
 const remoteJson = (gh, path) => JSON.parse(b64ToUtf8(gh.files.get(path).content))
@@ -1127,6 +1182,110 @@ describe('sync', () => {
     const blob = await sync.getImage('images/z-front.jpg')
     expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
   })
+
+  const seed = async (path, rec, sha = 'x1') => {
+    gh.files.set(path, { sha, content: utf8ToB64(JSON.stringify(rec)) })
+  }
+  describe('robustness', () => {
+    it('delete of an already-gone remote file succeeds', async () => {
+      await db.files.put({ path: 'cards/a.json', sha: 'zz', base: null })
+      await sync.enqueue('cards/a.json', 'delete'); await sync.push()
+      expect(await db.outbox.count()).toBe(0)
+      expect(await db.files.get('cards/a.json')).toBeUndefined()
+    })
+    it('edit of a remotely deleted card -> conflict; keep local recreates', async () => {
+      await seed('cards/a.json', { id: 'a', name: 'A' }); await sync.pull()
+      gh.files.delete('cards/a.json')
+      await db.cards.update('a', { name: 'L' }); await sync.enqueue('cards/a.json'); await sync.push()
+      const c = await db.conflicts.get('cards/a.json')
+      expect(c).toMatchObject({ fields: ['*deleted'], remote: null, remoteSha: null })
+      expect((await db.outbox.toArray())[0].state).toBe('conflict')
+      await sync.resolve('cards/a.json', 'local')
+      expect(remoteJson(gh, 'cards/a.json').name).toBe('L')
+      expect(await db.outbox.count()).toBe(0); expect(await db.conflicts.count()).toBe(0)
+    })
+    it('edit of a remotely deleted card -> keep remote deletes locally', async () => {
+      await seed('cards/a.json', { id: 'a', name: 'A' }); await sync.pull()
+      gh.files.delete('cards/a.json')
+      await db.cards.update('a', { name: 'L' }); await sync.enqueue('cards/a.json'); await sync.push()
+      await sync.resolve('cards/a.json', 'remote')
+      expect(await db.cards.get('a')).toBeUndefined()
+      expect(await db.files.get('cards/a.json')).toBeUndefined()
+      expect(await db.outbox.count()).toBe(0)
+    })
+    it('local delete vs remote change -> conflict; keep local deletes remote', async () => {
+      await seed('cards/a.json', { id: 'a', name: 'A' }); await sync.pull()
+      await seed('cards/a.json', { id: 'a', name: 'R' }, 'x9')
+      await db.cards.delete('a'); await sync.enqueue('cards/a.json', 'delete'); await sync.push()
+      expect((await db.conflicts.get('cards/a.json')).fields).toEqual(['*deleted-local'])
+      await sync.resolve('cards/a.json', 'local')
+      expect(gh.files.has('cards/a.json')).toBe(false)
+      expect(await db.outbox.count()).toBe(0)
+    })
+    it('local delete vs remote change -> keep remote restores', async () => {
+      await seed('cards/a.json', { id: 'a', name: 'A' }); await sync.pull()
+      await seed('cards/a.json', { id: 'a', name: 'R' }, 'x9')
+      await db.cards.delete('a'); await sync.enqueue('cards/a.json', 'delete'); await sync.push()
+      await sync.resolve('cards/a.json', 'remote')
+      expect((await db.cards.get('a')).name).toBe('R')
+      expect(await db.outbox.count()).toBe(0)
+    })
+    it('a failing item (413) does not block the next; re-enqueue retries', async () => {
+      const put = gh.putFile; let fail = true
+      gh.putFile = async (p, ...r) => { if (fail && p === 'cards/a.json') throw new GitHubError('other', 413, 'too big'); return put(p, ...r) }
+      await db.cards.bulkPut([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }])
+      await sync.enqueue('cards/a.json'); await sync.enqueue('cards/b.json'); await sync.push()
+      expect(gh.files.has('cards/b.json')).toBe(true)
+      const left = await db.outbox.toArray()
+      expect(left).toHaveLength(1); expect(left[0]).toMatchObject({ path: 'cards/a.json', state: 'error', error: 'other' })
+      await sync.push(); expect(gh.files.has('cards/a.json')).toBe(false)   // no automatic retry
+      fail = false; await sync.enqueue('cards/a.json'); await sync.push()
+      expect(gh.files.has('cards/a.json')).toBe(true); expect(await db.outbox.count()).toBe(0)
+    })
+    it('notfound on put marks item error and continues', async () => {
+      await db.cards.put({ id: 'a', name: 'A' }); await sync.enqueue('cards/a.json')
+      gh.putFile = async () => { throw new GitHubError('notfound', 404, '') }
+      await sync.push()
+      expect((await db.outbox.toArray())[0]).toMatchObject({ state: 'error', error: 'notfound' })
+    })
+    it('auth errors abort and keep the item ready', async () => {
+      gh.putFile = async () => { throw new GitHubError('auth', 401, '') }
+      await db.cards.put({ id: 'a', name: 'A' }); await sync.enqueue('cards/a.json')
+      await expect(sync.push()).rejects.toMatchObject({ kind: 'auth' })
+      expect((await db.outbox.toArray())[0].state).toBe('ready')
+    })
+    it('single-flight: concurrent syncAll pushes once', async () => {
+      const put = gh.putFile; let puts = 0
+      gh.putFile = async (...a) => { puts++; await new Promise(r => setTimeout(r, 10)); return put(...a) }
+      await db.cards.put({ id: 'a', name: 'A' }); await sync.enqueue('cards/a.json')
+      await Promise.all([sync.syncAll(), sync.syncAll()])
+      expect(puts).toBe(1); expect(await db.outbox.count()).toBe(0)
+    })
+    it('enqueue and successful push clear stale conflict rows', async () => {
+      await db.conflicts.put({ path: 'cards/a.json', local: {}, remote: {}, remoteSha: 's', fields: ['name'] })
+      await db.cards.put({ id: 'a', name: 'A' }); await sync.enqueue('cards/a.json')
+      expect(await db.conflicts.count()).toBe(0)
+      await db.conflicts.put({ path: 'cards/a.json', local: {}, remote: {}, remoteSha: 's', fields: ['name'] })
+      await sync.push()
+      expect(await db.conflicts.count()).toBe(0)
+    })
+    it('pull ignores foreign paths and skips invalid JSON', async () => {
+      gh.files.set('cards/README.md', { sha: 'r', content: utf8ToB64('# hi') })
+      gh.files.set('cards/sub/x.json', { sha: 'r2', content: utf8ToB64('{}') })
+      gh.files.set('cards/bad.json', { sha: 'r3', content: utf8ToB64('{nope') })
+      await seed('cards/ok.json', { id: 'ok', name: 'OK' })
+      expect(await sync.pull()).toEqual({ updated: 1, deleted: 0 })
+      expect(await db.cards.count()).toBe(1)
+      expect(await db.files.get('cards/bad.json')).toBeUndefined()
+    })
+    it('empty remote tree with many local files is treated as suspicious', async () => {
+      for (const id of ['a', 'b', 'c']) await seed(`cards/${id}.json`, { id, name: id }, `s-${id}`)
+      await sync.pull()
+      gh.files.clear()
+      expect(await sync.pull()).toEqual({ updated: 0, deleted: 0, suspicious: true })
+      expect(await db.cards.count()).toBe(3)
+    })
+  })
 })
 ```
 
@@ -1136,13 +1295,21 @@ describe('sync', () => {
 
 ```js
 // src/services/sync.js
+// Conflict policy: JSON records (cards/companies) use a 3-way merge against the last synced base;
+// images are last-writer-wins (a local image overwrites the remote one).
 import { utf8ToB64, b64ToUtf8, blobToB64, b64ToBlob } from '../lib/b64.js'
 import { merge3 } from '../lib/merge.js'
 
 const tableOf = path => path.startsWith('cards/') ? 'cards' : path.startsWith('companies/') ? 'companies' : null
 const idOf = path => path.split('/').pop().replace(/\.json$/, '')
+const APP_PATH = /^(?:(?:cards|companies)\/[^/]+\.json|images\/[^/]+)$/
+const FATAL = new Set(['network', 'auth', 'ratelimit'])   // abort the whole run; everything else is per-item
 
 export function createSync({ db, gh }) {
+  // single-flight: push / pull / resolve / syncAll never overlap
+  let chain = Promise.resolve()
+  const exclusive = fn => { const p = chain.then(fn); chain = p.catch(() => {}); return p }
+
   async function localContent(path) {
     const t = tableOf(path)
     if (t) { const rec = await db[t].get(idOf(path)); return rec ? { b64: utf8ToB64(JSON.stringify(rec, null, 2)), rec } : null }
@@ -1150,87 +1317,130 @@ export function createSync({ db, gh }) {
     return img ? { b64: await blobToB64(img.blob) } : null
   }
   async function enqueue(path, op = 'put') {
-    await db.transaction('rw', db.outbox, async () => {
+    await db.transaction('rw', db.outbox, db.conflicts, async () => {
       await db.outbox.where('path').equals(path).delete()
+      await db.conflicts.delete(path)
       await db.outbox.add({ path, op, state: 'ready' })
     })
   }
   async function pushOne(item) {
     const known = await db.files.get(item.path)
     if (item.op === 'delete') {
-      if (known?.sha) await gh.deleteFile(item.path, known.sha)
-      await db.files.delete(item.path)
+      if (known?.sha) {
+        try { await gh.deleteFile(item.path, known.sha) }
+        catch (e) { if (e.kind !== 'notfound') throw e }   // already gone = success
+      }
+      await db.files.delete(item.path); await db.conflicts.delete(item.path)
       return
     }
     const c = await localContent(item.path)
-    if (!c) { await db.outbox.delete(item.seq); return }
+    if (!c) return
     const sha = await gh.putFile(item.path, c.b64, known?.sha)
     await db.files.put({ path: item.path, sha, base: c.rec ?? null })
+    await db.conflicts.delete(item.path)
+  }
+  async function markConflict(item, row) {
+    await db.conflicts.put({ path: item.path, ...row })
+    await db.outbox.update(item.seq, { state: 'conflict' })
+    return 'conflict'
   }
   async function handleConflict(item) {
-    const remote = await gh.getFile(item.path)
-    const t = tableOf(item.path)
-    if (!t) { await db.files.put({ path: item.path, sha: remote.sha, base: null }); return pushOne(item) }   // images: local wins
-    const remoteRec = JSON.parse(b64ToUtf8(remote.content))
-    const localRec = await db[t].get(idOf(item.path))
-    const { merged, conflicts } = merge3((await db.files.get(item.path))?.base ?? null, localRec, remoteRec)
-    if (conflicts.length) {
-      await db.conflicts.put({ path: item.path, local: localRec, remote: remoteRec, remoteSha: remote.sha, fields: conflicts })
-      await db.outbox.update(item.seq, { state: 'conflict' })
-      return 'conflict'
+    const path = item.path, t = tableOf(path)
+    let remote = null
+    try { remote = await gh.getFile(path) } catch (e) { if (e.kind !== 'notfound') throw e }
+    if (!t) {   // images: last writer wins
+      if (remote) await db.files.put({ path, sha: remote.sha, base: null }); else await db.files.delete(path)
+      await pushOne(item); return 'done'
     }
+    const localRec = item.op === 'delete' ? null : (await db[t].get(idOf(path))) ?? null
+    if (!remote) {   // remote deleted
+      if (!localRec) { await db.files.delete(path); return 'done' }   // both sides deleted
+      return markConflict(item, { local: localRec, remote: null, remoteSha: null, fields: ['*deleted'] })
+    }
+    const remoteRec = JSON.parse(b64ToUtf8(remote.content))
+    if (!localRec) return markConflict(item, { local: null, remote: remoteRec, remoteSha: remote.sha, fields: ['*deleted-local'] })
+    const { merged, conflicts } = merge3((await db.files.get(path))?.base ?? null, localRec, remoteRec)
+    if (conflicts.length) return markConflict(item, { local: localRec, remote: remoteRec, remoteSha: remote.sha, fields: conflicts })
     await db[t].put(merged)
-    await db.files.put({ path: item.path, sha: remote.sha, base: remoteRec })
-    return pushOne(item)
+    await db.files.put({ path, sha: remote.sha, base: remoteRec })
+    await pushOne(item); return 'done'
   }
-  async function push() {
+  async function attempt(item) {
+    try { await pushOne(item) }
+    catch (e) {
+      // 404 on a PUT that carried a sha means the file vanished remotely: same path as a sha mismatch
+      const vanished = e.kind === 'notfound' && !!(await db.files.get(item.path))?.sha
+      if (e.kind !== 'conflict' && !vanished) throw e
+      if ((await handleConflict(item)) === 'conflict') return
+    }
+    await db.outbox.delete(item.seq)
+  }
+  async function _push() {
     const items = await db.outbox.orderBy('seq').filter(i => i.state === 'ready').toArray()
     for (const item of items) {
-      try { await pushOne(item) }
+      try { await attempt(item) }
       catch (e) {
-        if (e.kind !== 'conflict') throw e
-        if ((await handleConflict(item)) === 'conflict') continue
+        if (FATAL.has(e?.kind)) throw e
+        await db.outbox.update(item.seq, { state: 'error', error: e?.kind || 'other' })   // retried only when re-enqueued
       }
-      await db.outbox.delete(item.seq)
     }
   }
-  async function pull() {
-    const tree = await gh.getTree()
-    const remote = new Map(tree.map(e => [e.path, e.sha]))
-    const pending = new Set((await db.outbox.toArray()).map(o => o.path))
+  const tables = () => [db.cards, db.companies, db.images, db.files, db.outbox]
+  async function _pull() {
+    const remote = new Map((await gh.getTree()).filter(e => APP_PATH.test(e.path)).map(e => [e.path, e.sha]))
+    const known = await db.files.toArray()
+    if (remote.size === 0 && known.length >= 3) return { updated: 0, deleted: 0, suspicious: true }
+    const pendingNow = path => db.outbox.where('path').equals(path).count()
     let updated = 0, deleted = 0
     for (const [path, sha] of remote) {
-      if (pending.has(path)) continue
-      const known = await db.files.get(path)
-      if (known?.sha === sha) continue
-      const t = tableOf(path)
-      if (t) {
-        const rec = JSON.parse(b64ToUtf8(await gh.getBlob(sha)))
-        await db[t].put(rec); await db.files.put({ path, sha, base: rec }); updated++
-      } else if (path.startsWith('images/')) {
-        await db.images.delete(path); await db.files.put({ path, sha, base: null })
+      try {
+        if ((await db.files.get(path))?.sha === sha) continue
+        if (await pendingNow(path)) continue
+        const t = tableOf(path)
+        let rec = null
+        if (t) {
+          rec = JSON.parse(b64ToUtf8(await gh.getBlob(sha)))
+          if (!rec || typeof rec !== 'object' || Array.isArray(rec)) throw new Error('not a record')
+        }
+        const applied = await db.transaction('rw', tables(), async () => {
+          if (await pendingNow(path)) return false   // edited locally while we were fetching
+          if (t) await db[t].put(rec); else await db.images.delete(path)
+          await db.files.put({ path, sha, base: rec })
+          return true
+        })
+        if (applied && t) updated++
+      } catch (e) {
+        if (FATAL.has(e?.kind)) throw e
+        console.warn('pull: skipped', path, e?.message)
       }
     }
-    for (const f of await db.files.toArray()) {
-      if (remote.has(f.path) || pending.has(f.path)) continue
+    for (const f of known) {
+      if (remote.has(f.path) || !APP_PATH.test(f.path)) continue
       const t = tableOf(f.path)
-      if (t) { await db[t].delete(idOf(f.path)); deleted++ } else await db.images.delete(f.path)
-      await db.files.delete(f.path)
+      const done = await db.transaction('rw', tables(), async () => {
+        if (await pendingNow(f.path)) return false
+        if (t) await db[t].delete(idOf(f.path)); else await db.images.delete(f.path)
+        await db.files.delete(f.path)
+        return true
+      })
+      if (done && t) deleted++
     }
     return { updated, deleted }
   }
-  async function resolve(path, keep) {
+  async function _resolve(path, keep) {
     const c = await db.conflicts.get(path); if (!c) return
     const t = tableOf(path)
-    await db.files.put({ path, sha: c.remoteSha, base: c.remote })
     if (keep === 'remote') {
-      await db[t].put(c.remote)
+      if (c.remote) { await db[t].put(c.remote); await db.files.put({ path, sha: c.remoteSha, base: c.remote }) }
+      else { await db[t].delete(idOf(path)); await db.files.delete(path) }
       await db.outbox.where('path').equals(path).delete()
-    } else {
-      await db.outbox.where('path').equals(path).modify({ state: 'ready' })
+      await db.conflicts.delete(path)
+      return
     }
+    if (c.remoteSha) await db.files.put({ path, sha: c.remoteSha, base: c.remote }); else await db.files.delete(path)
+    await db.outbox.where('path').equals(path).modify({ state: 'ready' })
     await db.conflicts.delete(path)
-    if (keep !== 'remote') await push()
+    await _push()
   }
   async function getImage(path) {
     const hit = await db.images.get(path); if (hit) return hit.blob
@@ -1239,7 +1449,13 @@ export function createSync({ db, gh }) {
     await db.images.put({ path, blob })
     return blob
   }
-  return { enqueue, push, pull, resolve, getImage, async syncAll() { await push(); return pull() } }
+  return {
+    enqueue, getImage,
+    push: () => exclusive(_push),
+    pull: () => exclusive(_pull),
+    resolve: (path, keep) => exclusive(() => _resolve(path, keep)),
+    syncAll: () => exclusive(async () => { await _push(); return _pull() })
+  }
 }
 ```
 

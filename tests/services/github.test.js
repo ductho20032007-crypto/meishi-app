@@ -17,7 +17,7 @@ describe('github client', () => {
     expect(url).toBe('https://api.github.com/repos/me/d/contents/cards/a.json')
     expect(JSON.parse(init.body)).toMatchObject({ content: 'Zm9v', sha: 'old' })
   })
-  it.each([[401, 'auth'], [404, 'notfound'], [409, 'conflict'], [422, 'conflict']])('maps %i → %s', async (s, kind) => {
+  it.each([[401, 'auth'], [403, 'auth'], [404, 'notfound'], [422, 'conflict']])('maps %i → %s', async (s, kind) => {
     const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(s, { message: 'x' })) })
     await expect(gh.getTree()).rejects.toMatchObject({ kind })
   })
@@ -28,5 +28,46 @@ describe('github client', () => {
   it('network failure → network', async () => {
     const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockRejectedValue(new TypeError('Failed')) })
     await expect(gh.getTree()).rejects.toBeInstanceOf(GitHubError)
+  })
+  it('409 on put maps to conflict', async () => {
+    const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(409, { message: 'x' })) })
+    await expect(gh.putFile('cards/a.json', 'Zm9v', 'old')).rejects.toMatchObject({ kind: 'conflict' })
+  })
+  it('empty repo (409 / "empty") gives empty tree', async () => {
+    const a = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(409, { message: 'Git Repository is empty.' })) })
+    expect(await a.getTree()).toEqual([])
+    const b = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(404, { message: 'repository is empty' })) })
+    expect(await b.getTree()).toEqual([])
+  })
+  it('truncated tree is an error', async () => {
+    const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(200, { tree: [], truncated: true })) })
+    await expect(gh.getTree()).rejects.toMatchObject({ kind: 'other' })
+  })
+  it('sends cache: no-store', async () => {
+    const fetch = vi.fn().mockResolvedValue(res(200, { tree: [] }))
+    await createGitHub({ token: 't', repo: 'me/d', fetch }).getTree()
+    expect(fetch.mock.calls[0][1].cache).toBe('no-store')
+  })
+  describe('rate limit detection', () => {
+    const kindOf = async (status, body, headers) => {
+      const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(status, body, headers)) })
+      return gh.getTree().catch(e => e)
+    }
+    it('429', async () => {
+      const e = await kindOf(429, { message: 'x' })
+      expect(e.kind).toBe('ratelimit'); expect(e.resetAt).toBeGreaterThan(Date.now())
+    })
+    it('403 with retry-after', async () => {
+      const e = await kindOf(403, { message: 'x' }, { 'retry-after': '30' })
+      expect(e.kind).toBe('ratelimit')
+      expect(e.resetAt).toBeGreaterThan(Date.now() + 20000); expect(e.resetAt).toBeLessThan(Date.now() + 40000)
+    })
+    it('403 with abuse / rate limit message', async () => {
+      expect((await kindOf(403, { message: 'You have exceeded a secondary rate limit' })).kind).toBe('ratelimit')
+      expect((await kindOf(403, { message: 'abuse detection' })).kind).toBe('ratelimit')
+    })
+    it('403 otherwise is auth', async () => {
+      expect((await kindOf(403, { message: 'Resource not accessible' })).kind).toBe('auth')
+    })
   })
 })

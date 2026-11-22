@@ -7,14 +7,19 @@ export function createGitHub({ token, repo, fetch = globalThis.fetch.bind(global
   async function call(path, init = {}) {
     let r
     try {
-      r = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
+      r = await fetch(base + path, { ...init, cache: 'no-store', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28', ...(init.body ? { 'Content-Type': 'application/json' } : {}) } })
     } catch (e) { throw new GitHubError('network', 0, e.message) }
     if (r.ok) return r.status === 204 ? null : r.json()
     const body = await r.json().catch(() => ({}))
     const msg = body.message || r.statusText
-    if ((r.status === 403 || r.status === 429) && r.headers.get('x-ratelimit-remaining') === '0')
-      throw new GitHubError('ratelimit', r.status, msg, Number(r.headers.get('x-ratelimit-reset')) * 1000)
+    const retryAfter = r.headers.get('retry-after'), reset = r.headers.get('x-ratelimit-reset')
+    const limited = r.status === 429 || (r.status === 403 &&
+      (retryAfter != null || r.headers.get('x-ratelimit-remaining') === '0' || /rate limit|abuse/i.test(msg)))
+    if (limited) {
+      const resetAt = retryAfter != null ? Date.now() + Number(retryAfter) * 1000 : reset ? Number(reset) * 1000 : Date.now() + 60000
+      throw new GitHubError('ratelimit', r.status, msg, resetAt)
+    }
     const kind = { 401: 'auth', 403: 'auth', 404: 'notfound', 409: 'conflict', 422: 'conflict' }[r.status] || 'other'
     throw new GitHubError(kind, r.status, msg)
   }
@@ -22,7 +27,10 @@ export function createGitHub({ token, repo, fetch = globalThis.fetch.bind(global
   return {
     ping: () => call(''),
     async getTree() {
-      const t = await call('/git/trees/HEAD?recursive=1')
+      let t
+      try { t = await call('/git/trees/HEAD?recursive=1') }
+      catch (e) { if (e instanceof GitHubError && (e.status === 409 || /empty/i.test(e.message))) return []; throw e }   // empty repo
+      if (t.truncated) throw new GitHubError('other', 200, 'tree truncated')
       return t.tree.filter(e => e.type === 'blob').map(({ path, sha }) => ({ path, sha }))
     },
     async getBlob(sha) { return (await call(`/git/blobs/${sha}`)).content },          // base64
