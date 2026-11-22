@@ -1035,6 +1035,7 @@ export function createGitHub({ token, repo, fetch = globalThis.fetch.bind(global
 - [ ] **Step 1: test**
 
 ```js
+// @vitest-environment node   (native Blob/arrayBuffer; fake-indexeddb still loaded via setupFiles)
 import { describe, it, expect, beforeEach } from 'vitest'
 import { openDb } from '../../src/services/db.js'
 import { createSync } from '../../src/services/sync.js'
