@@ -1972,36 +1972,33 @@ for (const f of readdirSync(dir).filter(f => /\.(png|jpe?g)$/i.test(f))) {
 
 ### Task 11: App actions (repo service) + live query composable
 
-**Files:** Create `src/services/repo.js`, `src/composables/useLive.js`, `src/lib/image.js`; Test `tests/services/repo.test.js`
+**Files:** Create `src/services/repo.js`, `src/services/app.js`, `src/composables/useLive.js`, `src/lib/image.js`; Test `tests/services/repo.test.js`
 
-Responsibilities of `repo.js` (single module the views call):
+Final API (DI: `createRepo` never imports settings or builds clients; `app.js` wires them lazily from `getConfig()`):
 
 ```js
-// src/services/repo.js  (public API)
-export function createRepo({ db, sync, gemini, now = () => new Date().toISOString() })
-//  createCard({ front: Blob, back?: Blob, metPlace, metAt, tags, memo }) → id
-//      saves images (already resized by caller via lib/image.js) as images/{id}-front.jpg / -back.jpg,
-//      card {status:'pending', ocrBy:null, thumb, hasBack, createdAt, updatedAt,...empty fields}, enqueues card + images,
-//      then fire-and-forget runOcr(id) and sync.push()
-//  runOcr(id) → loads image blobs, gemini.extract, mergeOcr, assignCompany, save+enqueue; on error sets ocrError=e.kind
-//  processPending() → runOcr for every card with status 'pending'
-//  updateCard(id, patch) → merge, updatedAt=now(), save, enqueue
-//  deleteCard(id) → delete card + images locally, enqueue deletes
-//  assignCompany(card) → matchCompany(card.companyRaw, companies) or create {id,name:companyRaw,aliases:[],deptAliases:{},placeholders:[]};
-//      adds companyRaw to aliases if new spelling; returns card with companyId
-//  addPlaceholder(companyId, {name,title,deptPath,rank,reportsTo,memo}), updatePlaceholder, removePlaceholder
-//  setDeptAlias(companyId, from, to)
+// src/services/repo.js
+createRepo({ db, sync, gemini, now = () => new Date().toISOString(), autoOcr = true })
+//  createCard({ front, back?, thumb?, metPlace, metAt, tags, memo }) -> id
+//      pending card (rank null, empty OCR fields, companyId/reportsTo null); images/<id>-front.jpg|-back.jpg in db.images;
+//      enqueues card + images; autoOcr -> fire-and-forget runOcr + push
+//  runOcr(id) -> serial queue (one card at a time). busy/quota/network/timeout: card stays pending, ocrError=kind, resolves.
+//      auth/region/bad_request: card stays pending, ocrError=kind, ocrState.error=kind, promise rejects. Success: mergeOcr + assignCompany, enqueue, push.
+//  processPending() -> runOcr for every pending card (not already queued); resolves with the fatal errors
+//  idle() -> promise resolving when the queue is drained
+//  ocrState: { get() -> { runningId, queued: [], error }, subscribe(fn) -> unsubscribe }
+//  updateCard(id, patch) -> title change without explicit rank recomputes rankFor; bumps updatedAt; enqueue + push
+//  deleteCard(id) -> aborts in-flight OCR (AbortSignal), deletes card + images, enqueues 'delete' (card, front, back)
+//  assignCompany(card) -> matchCompany over name+aliases, else new company; new spelling -> alias added + company enqueued
+//  addPlaceholder / updatePlaceholder / removePlaceholder / setDeptAlias(companyId, from, to) / renameCompany(companyId, name)
+//      -> bump updatedAt, save, enqueue companies/<id>.json
+// src/services/app.js: getApp() -> { db, gh, gemini, sync, repo } (lazy), resetApp()
+// src/composables/useLive.js: useLive(queryFn, initial) -> shallowRef over Dexie liveQuery, unsubscribes on scope dispose
+// src/lib/image.js: prepareImage(file, { maxSide=1600, quality=0.8, rotate=0 }) -> JPEG Blob; makeThumb(blob, 320) -> data URL (not unit-tested; Task 18)
 ```
 
-- [ ] **Step 1: test** (`tests/services/repo.test.js`) — with fake-indexeddb, a stub sync `{ enqueue: vi.fn(), push: vi.fn() }` and stub gemini returning `{ name:'山田 太郎', companyRaw:'株式会社ABC商事', deptPath:['営業本部'], title:'課長', rank:5, phones:[], emails:[] }`:
-  - `createCard` → card exists with status `pending`, images saved, enqueue called with `cards/<id>.json`, `images/<id>-front.jpg`.
-  - `runOcr` → status `done`, `companyId` set; a company created with name `株式会社ABC商事`; second card with `ABC商事株式会社` reuses same company and adds alias.
-  - gemini rejecting `{kind:'quota'}` → card stays `pending`, `ocrError === 'quota'`.
-  - `deleteCard` → enqueue called with `'delete'` for card + front image.
-
-- [ ] **Step 2–4:** implement until green. `lib/image.js` exports `prepareImage(file, { maxSide=1600, quality=0.8, rotate=0 }) → Promise<Blob>` and `makeThumb(blob, 320) → Promise<dataURL>` using `createImageBitmap(file, { imageOrientation: 'from-image' })` + canvas (not unit-tested; covered by Playwright in Task 18). `useLive(fn)` wraps Dexie `liveQuery` into a `shallowRef` and unsubscribes `onScopeDispose`.
-
-- [ ] **Step 5:** Commit `feat: repo actions and live queries`.
+- [x] Tests (`tests/services/repo.test.js`, node env, fake-indexeddb): createCard, runOcr + company reuse/alias, quota/busy/auth errors, serial queue, ocrState, processPending, deleteCard (+ abort in flight), updateCard rank, placeholder/deptAlias helpers.
+- [x] Commit `feat: repo actions, OCR queue, live queries`.
 
 ---
 
