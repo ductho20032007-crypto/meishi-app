@@ -1517,42 +1517,87 @@ export function createSync({ db, gh }) {
 - [ ] **Step 1: test**
 
 ```js
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createGemini, mergeOcr, sanitizeOcr, DEFAULT_MODELS, THINKING_CONFIG } from '../../src/services/gemini.js'
 const ok = obj => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] }), { status: 200 })
+const err = (status, message, extra = {}) => new Response(JSON.stringify({ error: { message, ...extra } }), { status })
+const card = { name: 'N', title: '課長', deptPath: [], rank: 5 }
+const modelOf = c => c[0].match(/models\/([^:]+):/)[1]
+const sleep = vi.fn().mockResolvedValue()
+beforeEach(() => sleep.mockClear())
+
 describe('gemini', () => {
   it('sends images + schema and parses JSON', async () => {
     const fetch = vi.fn().mockResolvedValue(ok({ name: '山田 太郎', title: '課長', deptPath: ['営業本部'], rank: 5 }))
     const g = createGemini({ key: 'K', model: 'gemini-flash-latest', fetch })
-    const r = await g.extract([{ mimeType: 'image/jpeg', data: 'AAA' }])
+    const r = await g.extract([{ mimeType: 'image/jpeg', data: 'AAA' }, { mimeType: 'image/png', data: 'BBB' }])
     expect(r.name).toBe('山田 太郎')
     const [url, init] = fetch.mock.calls[0]
     expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent')
     expect(init.headers['x-goog-api-key']).toBe('K')
     const body = JSON.parse(init.body)
-    expect(body.contents[0].parts[1]).toEqual({ inlineData: { mimeType: 'image/jpeg', data: 'AAA' } })
+    expect(body.contents[0].parts.slice(1)).toEqual([
+      { text: 'Image 1 = front' }, { inlineData: { mimeType: 'image/jpeg', data: 'AAA' } },
+      { text: 'Image 2 = back' }, { inlineData: { mimeType: 'image/png', data: 'BBB' } }
+    ])
     expect(body.generationConfig.responseMimeType).toBe('application/json')
-  })
-  it.each([[429, 'quota'], [400, 'auth'], [403, 'auth'], [500, 'other']])('maps %i → %s', async (s, kind) => {
-    const g = createGemini({ key: 'K', fetch: vi.fn().mockResolvedValue(new Response('{"error":{"message":"API key not valid"}}', { status: s })) })
-    await expect(g.extract([])).rejects.toMatchObject({ kind })
+    expect(init.signal).toBeInstanceOf(AbortSignal)
   })
   it('sanitizes and fills rank from title', () => {
     const s = sanitizeOcr({ name: ' A ', title: '部長', rank: 99, phones: [{ type: 'mobile', value: '1' }, { value: '' }], emails: 'x' })
     expect(s).toMatchObject({ name: 'A', rank: 4, phones: [{ type: 'mobile', value: '1' }], emails: [], deptPath: [] })
   })
-  it('mergeOcr keeps user-entered fields', () => {
-    const card = { id: '1', name: '', memo: 'm', tags: ['t'], phones: [], status: 'pending' }
-    const m = mergeOcr(card, { name: 'N', phones: [{ type: 'mobile', value: '1' }], memo: 'ignored' })
-    expect(m).toMatchObject({ name: 'N', memo: 'm', tags: ['t'], status: 'done', ocrBy: 'gemini', ocrError: null })
+  it('dictionary rank wins over the model rank; model rank used for unknown titles', () => {
+    expect(sanitizeOcr({ title: '課長', rank: 7 }).rank).toBe(5)
+    expect(sanitizeOcr({ title: 'Zzz Wizard', rank: '5' }).rank).toBe(5)
+    expect(sanitizeOcr({ title: 'Zzz Wizard', rank: 'x' }).rank).toBe(7)
+    expect(sanitizeOcr({ title: 'Zzz Wizard', rank: 0 }).rank).toBe(7)
+  })
+  it('sanitizeOcr rejects non-objects', () => {
+    for (const bad of [[], null, 'x', 5]) expect(() => sanitizeOcr(bad)).toThrow()
+  })
+  it('mergeOcr keeps user-entered fields and stores a snapshot', () => {
+    const c = { id: '1', name: 'User', memo: 'm', tags: ['t'], phones: [], rank: null, status: 'pending' }
+    const m = mergeOcr(c, { name: 'N', title: '課長', rank: 5, phones: [{ type: 'mobile', value: '1' }], memo: 'ignored' })
+    expect(m).toMatchObject({ name: 'User', memo: 'm', tags: ['t'], rank: 5, phones: [{ type: 'mobile', value: '1' }], status: 'done', ocrBy: 'gemini', ocrError: null })
+    expect(m.ocrSnapshot).toMatchObject({ name: 'N', title: '課長', rank: 5 })
+    expect(m.ocrSnapshot.memo).toBeUndefined()
   })
 })
 
-const err = (status, message) => new Response(JSON.stringify({ error: { message } }), { status })
-const card = { name: 'N', title: '課長', deptPath: [], rank: 5 }
-const modelOf = c => c[0].match(/models\/([^:]+):/)[1]
+describe('gemini error classes', () => {
+  const kindOf = async resp => {
+    const g = createGemini({ key: 'K', model: 'm', fetch: vi.fn().mockImplementation(async () => resp()), sleep })
+    return g.extract([]).catch(e => e.kind)
+  }
+  it.each([
+    ['429 quota', () => err(429, 'x', { status: 'RESOURCE_EXHAUSTED' }), 'quota'],
+    ['400 invalid key', () => err(400, 'API key not valid. Please pass a valid API key.', { details: [{ reason: 'API_KEY_INVALID' }] }), 'auth'],
+    ['400 key expired', () => err(400, 'API key expired. Please renew the API key.'), 'auth'],
+    ['403', () => err(403, 'denied', { status: 'PERMISSION_DENIED' }), 'auth'],
+    ['401', () => err(401, 'x'), 'auth'],
+    ['400 location', () => err(400, 'User location is not supported for the API use.', { status: 'FAILED_PRECONDITION' }), 'region'],
+    ['400 schema', () => err(400, 'Invalid JSON payload received. Unknown name "foo"', { status: 'INVALID_ARGUMENT' }), 'bad_request'],
+    ['500', () => err(500, 'oops', { status: 'INTERNAL' }), 'busy'],
+    ['504', () => err(504, 'x', { status: 'DEADLINE_EXCEEDED' }), 'busy'],
+    ['503', () => err(503, 'x'), 'busy']
+  ])('%s', async (_n, mk, kind) => { expect(await kindOf(mk)).toBe(kind) })
+  it('non-JSON error body still classifies by status', async () => {
+    expect(await kindOf(() => new Response('<html>', { status: 502 }))).toBe('busy')
+  })
+  it('network error rejects immediately with kind network', async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'))
+    await expect(createGemini({ key: 'K', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'network' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+  it('bad_request / auth / region do not fall back', async () => {
+    const fetch = vi.fn().mockImplementation(async () => err(400, 'Invalid JSON payload'))
+    await expect(createGemini({ key: 'K', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('gemini fallback / retry', () => {
-  const sleep = vi.fn().mockResolvedValue()
   it('falls back to the next model after busy + one retry', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(err(503, 'high demand')).mockResolvedValueOnce(err(503, 'high demand'))
@@ -1592,13 +1637,66 @@ describe('gemini fallback / retry', () => {
     await expect(createGemini({ key: 'K', model: 'mine', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'busy' })
     expect(new Set(fetch.mock.calls.map(modelOf))).toEqual(new Set(['mine']))
   })
+  it('falls back on per-model quota (429) and keeps kind quota if all fail', async () => {
+    const f1 = vi.fn().mockImplementationOnce(async () => err(429, 'quota')).mockImplementation(async () => ok(card))
+    expect((await createGemini({ key: 'K', fetch: f1, sleep }).extract([])).name).toBe('N')
+    const f2 = vi.fn().mockImplementation(async () => err(429, 'quota'))
+    await expect(createGemini({ key: 'K', fetch: f2, sleep }).extract([])).rejects.toMatchObject({ kind: 'quota' })
+  })
+  it('busy outranks quota in the final error', async () => {
+    const fetch = vi.fn().mockImplementationOnce(async () => err(429, 'q')).mockImplementation(async () => err(503, 'x'))
+    await expect(createGemini({ key: 'K', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'busy' })
+  })
 })
-it('falls back on per-model quota (429) and keeps kind quota if all fail', async () => {
-  const sleep = vi.fn()
-  const f1 = vi.fn().mockImplementationOnce(async () => err(429, 'quota')).mockImplementation(async () => ok(card))
-  expect((await createGemini({ key: 'K', fetch: f1, sleep }).extract([])).name).toBe('N')
-  const f2 = vi.fn().mockImplementation(async () => err(429, 'quota'))
-  await expect(createGemini({ key: 'K', fetch: f2, sleep }).extract([])).rejects.toMatchObject({ kind: 'quota' })
+
+describe('gemini timeout / abort', () => {
+  const hang = (_url, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(init.signal.reason)))
+  it('timeout moves to the next model without retrying the same one; final kind is busy', async () => {
+    const fetch = vi.fn().mockImplementation(hang)
+    await expect(createGemini({ key: 'K', fetch, sleep, timeoutMs: 15 }).extract([])).rejects.toMatchObject({ kind: 'busy' })
+    expect(fetch.mock.calls.map(modelOf)).toEqual(DEFAULT_MODELS)
+    expect(sleep).not.toHaveBeenCalled()
+  })
+  it('timeout on the first model then success on the next', async () => {
+    const fetch = vi.fn().mockImplementationOnce(hang).mockImplementation(async () => ok(card))
+    expect((await createGemini({ key: 'K', fetch, sleep, timeoutMs: 15 }).extract([])).name).toBe('N')
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+  it('caller abort rejects immediately with kind aborted', async () => {
+    const fetch = vi.fn().mockImplementation(hang)
+    const ac = new AbortController()
+    const p = createGemini({ key: 'K', fetch, sleep }).extract([], { signal: ac.signal })
+    setTimeout(() => ac.abort(), 10)
+    await expect(p).rejects.toMatchObject({ kind: 'aborted' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+  it('already-aborted signal never calls fetch', async () => {
+    const fetch = vi.fn()
+    const ac = new AbortController(); ac.abort()
+    await expect(createGemini({ key: 'K', fetch, sleep }).extract([], { signal: ac.signal })).rejects.toMatchObject({ kind: 'aborted' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('gemini bad responses', () => {
+  const resp = j => new Response(JSON.stringify(j), { status: 200 })
+  it('no candidates / no text / SAFETY / unparseable / empty card fall through to the next model, final kind bad_response', async () => {
+    const bodies = [{ candidates: [] }, { candidates: [{ content: { parts: [{ text: '' }] } }] }, { candidates: [{ finishReason: 'SAFETY' }] }]
+    for (const b of bodies) {
+      const fetch = vi.fn().mockImplementation(async () => resp(b))
+      await expect(createGemini({ key: 'K', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'bad_response' })
+      expect(fetch).toHaveBeenCalledTimes(DEFAULT_MODELS.length)
+    }
+    const text = t => ({ candidates: [{ content: { parts: [{ text: t }] } }] })
+    for (const t of ['not json', '[]', '{"name":"","companyRaw":"","phones":[],"emails":[]}']) {
+      const fetch = vi.fn().mockImplementation(async () => resp(text(t)))
+      await expect(createGemini({ key: 'K', fetch, sleep }).extract([])).rejects.toMatchObject({ kind: 'bad_response' })
+    }
+  })
+  it('a bad response on one model then a good one on the next succeeds', async () => {
+    const fetch = vi.fn().mockImplementationOnce(async () => resp({ candidates: [] })).mockImplementation(async () => ok(card))
+    expect((await createGemini({ key: 'K', fetch, sleep }).extract([])).name).toBe('N')
+  })
 })
 ```
 
@@ -1608,8 +1706,7 @@ it('falls back on per-model quota (429) and keeps kind quota if all fail', async
 
 ```js
 // src/services/gemini.js
-// src/services/gemini.js
-import { rankFor } from '../lib/rank.js'
+import { matchTitle } from '../lib/rank.js'
 export class GeminiError extends Error { constructor(kind, status, message) { super(message); this.kind = kind; this.status = status } }
 const STR = { type: 'STRING' }
 export const OCR_SCHEMA = {
@@ -1625,76 +1722,118 @@ export const OCR_SCHEMA = {
 export const OCR_PROMPT = `You read a business card photo (front, optional back) and return JSON only.
 Rules:
 - Keep text in the original script (Japanese/Vietnamese/English). Do not translate.
-- name: person's full name as printed. nameKana: hiragana reading if furigana printed or confidently inferable, else "". nameLatin: romanized name if printed, else "".
+- name: person's full name as printed. nameKana: hiragana reading ONLY for Japanese names (furigana printed or confidently inferable); for any other name use "". nameLatin: romanized name if printed, else "".
 - companyRaw: company name exactly as printed.
 - deptPath: department split from top level to lowest, e.g. "営業本部 第一営業部 1課" → ["営業本部","第一営業部","1課"]. Do NOT include the job title.
 - title: job title only (e.g. "課長"), without department.
 - rank: 1 chairman/president/CEO; 2 board/officers/VP/vice president; 3 division/branch head, director; 4 department head (部長, trưởng phòng); 5 section head (課長, manager); 6 team lead (係長, 主任); 7 staff/none.
-- phones: type mobile for 携帯/mobile/di động or numbers starting 070/080/090; fax for FAX; otherwise office.
+- phones: type mobile for 携帯/mobile/di động/DĐ, Japanese numbers starting 070/080/090, and Vietnamese mobile numbers (+84 3x/5x/7x/8x/9x or 03x/05x/07x/08x/09x); Japanese 050 IP phones are office; fax for FAX; otherwise office.
 - Unknown fields: "" or [].`
 
 export const DEFAULT_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.5-flash']
 // Reduce "thinking" for speed (OCR needs no reasoning). Sent only when the model accepts it.
 export const THINKING_CONFIG = { thinkingLevel: 'low' }
 const MISSING = /not found|no longer available|not supported for generateContent/i
-const BUSY = /UNAVAILABLE|high demand|overloaded/i
+const BUSY = /high demand|overloaded/i
 const sleepMs = ms => new Promise(r => setTimeout(r, ms))
 
-export function createGemini({ key, model, fetch = globalThis.fetch.bind(globalThis), sleep = sleepMs, retryDelay = 2000 }) {
+// Classify a Google API error. Kinds: auth, region, busy, quota, model, bad_request, other
+// (plus network / timeout / aborted / bad_response raised elsewhere).
+export function classifyError(status, body, statusText = '') {
+  const e = body?.error || {}
+  const msg = e.message || statusText || ''
+  const st = String(e.status || '')
+  const reasons = (Array.isArray(e.details) ? e.details : []).map(d => d?.reason)
+  let kind
+  if (/location is not supported/i.test(msg)) kind = 'region'
+  else if (reasons.includes('API_KEY_INVALID') || /API key (not valid|expired)/i.test(msg) || status === 401 || status === 403 || st === 'PERMISSION_DENIED' || st === 'UNAUTHENTICATED') kind = 'auth'
+  else if ([500, 502, 503, 504].includes(status) || ['UNAVAILABLE', 'INTERNAL', 'DEADLINE_EXCEEDED'].includes(st) || BUSY.test(msg)) kind = 'busy'
+  else if (status === 429 || st === 'RESOURCE_EXHAUSTED') kind = 'quota'
+  else if (status === 404 || st === 'NOT_FOUND' || MISSING.test(msg)) kind = 'model'
+  else if (status === 400) kind = 'bad_request'
+  else kind = 'other'
+  return new GeminiError(kind, status, msg)
+}
+
+function makeSignal(user, timeoutMs) {
+  const t = AbortSignal.timeout(timeoutMs)
+  if (!user) return t
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([user, t])
+  const ac = new AbortController()
+  const fire = s => () => ac.abort(s.reason)
+  if (user.aborted) ac.abort(user.reason)
+  else { user.addEventListener('abort', fire(user), { once: true }); t.addEventListener('abort', fire(t), { once: true }) }
+  return ac.signal
+}
+
+export function createGemini({ key, model, fetch = globalThis.fetch.bind(globalThis), sleep = sleepMs, retryDelay = 2000, timeoutMs = 150000 }) {
   const base = 'https://generativelanguage.googleapis.com/v1beta'
   const models = Array.isArray(model) && model.length ? model : model ? [model] : DEFAULT_MODELS
   const noThinking = new Set()
-  async function call(url, init) {
+  async function call(url, init, userSignal) {
+    if (userSignal?.aborted) throw new GeminiError('aborted', 0, 'aborted')
     let r
-    try { r = await fetch(url, { ...init, headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' } }) }
-    catch (e) { throw new GeminiError('network', 0, e.message) }
+    try { r = await fetch(url, { ...init, signal: makeSignal(userSignal, timeoutMs), headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' } }) }
+    catch (e) {
+      if (userSignal?.aborted) throw new GeminiError('aborted', 0, 'aborted')
+      if (e?.name === 'TimeoutError') throw new GeminiError('timeout', 0, 'request timed out')
+      throw new GeminiError('network', 0, e?.message || String(e))
+    }
     if (r.ok) return r.json()
-    const msg = (await r.json().catch(() => ({})))?.error?.message || r.statusText || ''
-    const kind = r.status === 503 || BUSY.test(msg) ? 'busy'
-      : r.status === 404 || MISSING.test(msg) ? 'model'
-      : r.status === 429 ? 'quota'
-      : [400, 401, 403].includes(r.status) ? 'auth' : 'other'
-    throw new GeminiError(kind, r.status, msg)
+    throw classifyError(r.status, await r.json().catch(() => null), r.statusText)
   }
-  async function generate(m, images) {
+  async function generate(m, images, signal) {
     const gc = { responseMimeType: 'application/json', responseSchema: OCR_SCHEMA, temperature: 0 }
     if (!noThinking.has(m)) gc.thinkingConfig = THINKING_CONFIG
-    const body = { contents: [{ role: 'user', parts: [{ text: OCR_PROMPT }, ...images.map(i => ({ inlineData: { mimeType: i.mimeType, data: i.data } }))] }], generationConfig: gc }
-    try { return await call(`${base}/models/${m}:generateContent`, { method: 'POST', body: JSON.stringify(body) }) }
+    const parts = [{ text: OCR_PROMPT }]
+    images.forEach((i, n) => parts.push({ text: `Image ${n + 1} = ${n === 0 ? 'front' : 'back'}` }, { inlineData: { mimeType: i.mimeType, data: i.data } }))
+    const body = { contents: [{ role: 'user', parts }], generationConfig: gc }
+    try { return await call(`${base}/models/${m}:generateContent`, { method: 'POST', body: JSON.stringify(body) }, signal) }
     catch (e) {
-      if (gc.thinkingConfig && e.status === 400 && /thinking/i.test(e.message)) { noThinking.add(m); return generate(m, images) }
+      if (gc.thinkingConfig && e.status === 400 && /thinking/i.test(e.message)) { noThinking.add(m); return generate(m, images, signal) }
       throw e
     }
   }
-  async function withRetry(m, images) {
-    try { return await generate(m, images) }
-    catch (e) { if (e.kind !== 'busy') throw e; await sleep(retryDelay); return generate(m, images) }
+  async function withRetry(m, images, signal) {
+    try { return await generate(m, images, signal) }
+    catch (e) { if (e.kind !== 'busy') throw e; await sleep(retryDelay); return generate(m, images, signal) }
+  }
+  function parse(j) {
+    const c = j?.candidates?.[0]
+    const text = c?.content?.parts?.map(p => p.text || '').join('')
+    if (!text || (c.finishReason && !['STOP', 'MAX_TOKENS'].includes(c.finishReason))) throw new GeminiError('bad_response', 200, 'empty or blocked response')
+    let out
+    try { out = sanitizeOcr(JSON.parse(text)) } catch { throw new GeminiError('bad_response', 200, 'unparseable response') }
+    if (!out.name && !out.companyRaw && !out.phones.length && !out.emails.length) throw new GeminiError('bad_response', 200, 'nothing recognised')
+    return out
   }
   return {
     ping: () => call(`${base}/models?pageSize=1`, { method: 'GET' }),
-    async extract(images) {
+    async extract(images, { signal } = {}) {
       let busy = null, quota = null, last = null
       for (const m of models) {
-        try {
-          const j = await withRetry(m, images)
-          const text = j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('')
-          try { return sanitizeOcr(JSON.parse(text)) } catch { throw new GeminiError('bad_response', 200, 'unparseable response') }
-        } catch (e) {
-          if (e.kind === 'busy') busy = e
+        try { return parse(await withRetry(m, images, signal)) }
+        catch (e) {
+          if (e.kind === 'busy' || e.kind === 'timeout') busy = e // timeout: next model, never retried on the same one
           else if (e.kind === 'quota') quota = e // quotas are per model: try the next one
-          else if (e.kind !== 'model') throw e
+          else if (e.kind !== 'model' && e.kind !== 'bad_response') throw e
           last = e
         }
       }
-      throw busy || quota || last
+      if (busy) throw busy.kind === 'busy' ? busy : new GeminiError('busy', 0, busy.message)
+      throw quota || last
     }
   }
 }
 const s = v => (typeof v === 'string' ? v.trim() : '')
 const arr = v => (Array.isArray(v) ? v : [])
 export function sanitizeOcr(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) throw new TypeError('OCR result is not an object')
   const title = s(o.title)
-  const rank = Number.isInteger(o.rank) && o.rank >= 1 && o.rank <= 7 ? o.rank : rankFor(title)
+  const n = Number(o.rank)
+  const modelRank = Number.isInteger(n) && n >= 1 && n <= 7 ? n : null
+  const m = matchTitle(title)
+  const rank = m.entry ? m.entry.rank : (modelRank ?? m.rank) // dictionary wins over the model
   return {
     name: s(o.name), nameKana: s(o.nameKana), nameLatin: s(o.nameLatin), companyRaw: s(o.companyRaw),
     deptPath: arr(o.deptPath).map(s).filter(Boolean), title, rank,
@@ -1704,10 +1843,13 @@ export function sanitizeOcr(o) {
 }
 const OCR_FIELDS = ['name', 'nameKana', 'nameLatin', 'companyRaw', 'deptPath', 'title', 'rank', 'phones', 'emails', 'address', 'website']
 const empty = v => v == null || v === '' || (Array.isArray(v) && v.length === 0)
+// Pending cards must be created with `rank: null` (not 7) so the OCR rank can fill it.
+// ocrSnapshot keeps the raw OCR output for later "AI-filled" badges.
 export function mergeOcr(card, ocr) {
   const out = { ...card }
   for (const f of OCR_FIELDS) if (empty(card[f]) && !empty(ocr[f])) out[f] = ocr[f]
-  return { ...out, status: 'done', ocrBy: 'gemini', ocrError: null }
+  const ocrSnapshot = Object.fromEntries(OCR_FIELDS.map(f => [f, ocr[f]]))
+  return { ...out, status: 'done', ocrBy: 'gemini', ocrError: null, ocrSnapshot }
 }
 ```
 
@@ -1717,21 +1859,72 @@ export function mergeOcr(card, ocr) {
 
 ### Task 10: Scripts — setup link + OCR smoke test (real keys)
 
-**Files:** Create `scripts/env.mjs`, `scripts/setup-link.mjs`, `scripts/ocr-smoke.mjs`, fixtures `tests/fixtures/cards/{ja-yamada,vi-nguyen,en-smith}.png`
+**Files:** Create `scripts/env.mjs`, `tests/scripts/env.test.js`, `scripts/setup-link.mjs`, `scripts/ocr-smoke.mjs`, fixtures `tests/fixtures/cards/{ja-yamada,vi-nguyen,en-smith}.png`
 
 - [ ] **Step 1: env loader**
 
 ```js
 // scripts/env.mjs
 import { readFileSync } from 'node:fs'
-export function loadEnv(file = new URL('../.env.local', import.meta.url)) {
+import { fileURLToPath } from 'node:url'
+export function parseEnv(text) {
   const env = {}
-  for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
-    const m = line.match(/^([A-Z0-9_]+)=(.*)$/); if (m) env[m[1]] = m[2].trim()
+  for (const line of text.replace(/^﻿/, '').split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)$/)
+    if (!m) continue
+    let v = m[2].trim()
+    const q = v.match(/^(['"])(.*?)\1/)
+    v = q ? q[2] : v.replace(/\s+#.*$/, '').trim()
+    env[m[1]] = v
   }
-  for (const k of ['MEISHI_GITHUB_TOKEN', 'MEISHI_GITHUB_REPO', 'MEISHI_GEMINI_KEY']) if (!env[k]) throw new Error(`${k} missing in .env.local`)
   return env
 }
+export function loadEnv(file = new URL('../.env.local', import.meta.url), required = ['MEISHI_GITHUB_TOKEN', 'MEISHI_GITHUB_REPO', 'MEISHI_GEMINI_KEY']) {
+  let text
+  try { text = readFileSync(file, 'utf8') }
+  catch (e) { throw new Error(`Cannot read env file ${file instanceof URL ? fileURLToPath(file) : file}: ${e.code || e.message}`) }
+  const env = parseEnv(text)
+  for (const k of required) if (!env[k]) throw new Error(`${k} missing in .env.local`)
+  return env
+}
+```
+
+Test (`tests/scripts/env.test.js`, node environment):
+
+```js
+// @vitest-environment node
+import { describe, it, expect } from 'vitest'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { loadEnv, parseEnv } from '../../scripts/env.mjs'
+
+const tmp = text => {
+  const dir = mkdtempSync(join(tmpdir(), 'meishi-env-'))
+  const f = join(dir, '.env.local')
+  writeFileSync(f, text)
+  return { f, done: () => rmSync(dir, { recursive: true, force: true }) }
+}
+const REQ = ['A', 'B']
+
+describe('env loader', () => {
+  it('handles BOM, CRLF, export, spaces, quotes and comments', () => {
+    const t = tmp('﻿A = one # trailing\r\nexport B="two # kept"\r\n# comment\r\nC=\'three\'\r\nD=x#notcomment\r\n')
+    try {
+      expect(loadEnv(t.f, REQ)).toEqual({ A: 'one', B: 'two # kept', C: 'three', D: 'x#notcomment' })
+    } finally { t.done() }
+  })
+  it('reports a missing required key by name only', () => {
+    const t = tmp('A=1\n')
+    try { expect(() => loadEnv(t.f, REQ)).toThrow('B missing in .env.local') } finally { t.done() }
+  })
+  it('gives a clear error for a missing file', () => {
+    expect(() => loadEnv(join(tmpdir(), 'meishi-nope', '.env.local'), REQ)).toThrow(/Cannot read env file .*ENOENT/)
+  })
+  it('parseEnv ignores garbage lines', () => {
+    expect(parseEnv('foo\n=bar\nlower=1\nX=2')).toEqual({ X: '2' })
+  })
+})
 ```
 
 - [ ] **Step 2: setup-link.mjs**
@@ -1742,11 +1935,12 @@ import { fileURLToPath } from 'node:url'
 import { loadEnv } from './env.mjs'
 import { buildSetupUrl } from '../src/lib/setupLink.js'
 const env = loadEnv()
-const base = process.argv[2] || `https://${env.MEISHI_GITHUB_REPO.split('/')[0]}.github.io/meishi-app/`
+const args = process.argv.slice(2)
+const base = args.find(a => !a.startsWith('--')) || `https://${env.MEISHI_GITHUB_REPO.split('/')[0]}.github.io/meishi-app/`
 const url = buildSetupUrl(base, { gh: env.MEISHI_GITHUB_TOKEN, repo: env.MEISHI_GITHUB_REPO, gk: env.MEISHI_GEMINI_KEY })
 await QRCode.toFile(fileURLToPath(new URL('../setup-qr.png', import.meta.url)), url, { width: 600, margin: 2 })
 console.log('Setup QR saved to setup-qr.png (contains secrets — do not share).')
-if (process.argv.includes('--print')) console.log(url)
+if (args.includes('--print')) console.log(url)
 ```
 
 - [ ] **Step 3: fixtures** — render 3 HTML business cards (JA / VI / EN, 1050×600, slight rotation over a desk-coloured background) with Playwright and save PNGs to `tests/fixtures/cards/`. User-supplied real photos may be added to the same folder later.
@@ -1763,8 +1957,12 @@ const dir = new URL('../tests/fixtures/cards/', import.meta.url)
 for (const f of readdirSync(dir).filter(f => /\.(png|jpe?g)$/i.test(f))) {
   const data = readFileSync(new URL(f, dir)).toString('base64')
   const t0 = Date.now()
-  const r = await g.extract([{ mimeType: f.endsWith('.png') ? 'image/png' : 'image/jpeg', data }])
-  console.log(`\n== ${f} (${Date.now() - t0} ms)\n` + JSON.stringify(r, null, 2))
+  try {
+    const r = await g.extract([{ mimeType: f.endsWith('.png') ? 'image/png' : 'image/jpeg', data }])
+    console.log(`\n== ${f} (${Date.now() - t0} ms)\n` + JSON.stringify(r, null, 2))
+  } catch (e) {
+    console.log(`\n== ${f} FAILED (${Date.now() - t0} ms) kind=${e.kind} status=${e.status} ${e.message}`)
+  }
 }
 ```
 

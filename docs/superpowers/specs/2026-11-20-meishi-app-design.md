@@ -109,10 +109,11 @@ images/{cardId}-back.jpg      (tùy chọn)
 ## 4. OCR (Gemini)
 
 - Sau khi bấm **Lưu** ở màn Chụp: lưu card `status: pending` + ảnh vào outbox, sau đó gọi Gemini
-  (model mặc định `gemini-flash-latest`, đổi được trong Cài đặt) với ảnh mặt trước (+ mặt sau nếu có),
+  (model mặc định: danh sách fallback tự động `gemini-3.8-flash` → `gemini-flash-latest` → `gemini-3.5-flash`, timeout 150 s mỗi lần gọi; có thể ghim một model trong Cài đặt) với ảnh mặt trước (+ mặt sau nếu có),
   dùng structured output (JSON schema) trả về các trường ở 3.2 (trừ id/metadata).
 - Prompt yêu cầu: tách `deptPath` thành từng tầng; ánh xạ `title` → `rank` theo bảng 4.1;
   giữ nguyên chữ gốc (Nhật/Việt/Anh); điền `nameKana` nếu danh thiếp có furigana hoặc suy ra được.
+- OCR là bất đồng bộ: card ở trạng thái pending (⏳) cho tới khi có kết quả; lỗi 503/timeout (busy) giữ pending để thử lại sau.
 - Thành công → merge vào card (không ghi đè trường người dùng đã nhập tay), `status: done`, `ocrBy: gemini`.
 - Lỗi (offline, 429 hết quota, lỗi khác) → giữ `pending`, lưu `ocrError`; tự thử lại khi online/khi mở app;
   nút **[Đọc lại]** ở Chi tiết.

@@ -7,6 +7,10 @@ const dir = new URL('../tests/fixtures/cards/', import.meta.url)
 for (const f of readdirSync(dir).filter(f => /\.(png|jpe?g)$/i.test(f))) {
   const data = readFileSync(new URL(f, dir)).toString('base64')
   const t0 = Date.now()
-  const r = await g.extract([{ mimeType: f.endsWith('.png') ? 'image/png' : 'image/jpeg', data }])
-  console.log(`\n== ${f} (${Date.now() - t0} ms)\n` + JSON.stringify(r, null, 2))
+  try {
+    const r = await g.extract([{ mimeType: f.endsWith('.png') ? 'image/png' : 'image/jpeg', data }])
+    console.log(`\n== ${f} (${Date.now() - t0} ms)\n` + JSON.stringify(r, null, 2))
+  } catch (e) {
+    console.log(`\n== ${f} FAILED (${Date.now() - t0} ms) kind=${e.kind} status=${e.status} ${e.message}`)
+  }
 }
