@@ -20,16 +20,18 @@ export function createGitHub({ token, repo, fetch = globalThis.fetch.bind(global
       const resetAt = retryAfter != null ? Date.now() + Number(retryAfter) * 1000 : reset ? Number(reset) * 1000 : Date.now() + 60000
       throw new GitHubError('ratelimit', r.status, msg, resetAt)
     }
-    const kind = { 401: 'auth', 403: 'auth', 404: 'notfound', 409: 'conflict', 422: 'conflict' }[r.status] || 'other'
+    const kind = r.status >= 500 ? 'server' : { 401: 'auth', 403: 'auth', 404: 'notfound', 409: 'conflict', 422: 'conflict' }[r.status] || 'other'
     throw new GitHubError(kind, r.status, msg)
   }
+  // a 404 on a repo-level endpoint means the repo itself is unreachable (renamed / token lost access), not a missing file
+  const repoCall = (path, init) => call(path, init).catch(e => { throw e instanceof GitHubError && e.kind === 'notfound' ? new GitHubError('repomissing', 404, e.message) : e })
   const enc = p => p.split('/').map(encodeURIComponent).join('/')
   return {
-    ping: () => call(''),
+    ping: () => repoCall(''),
     async getTree() {
       let t
-      try { t = await call('/git/trees/HEAD?recursive=1') }
-      catch (e) { if (e instanceof GitHubError && (e.status === 409 || /empty/i.test(e.message))) return []; throw e }   // empty repo
+      try { t = await repoCall('/git/trees/HEAD?recursive=1') }
+      catch (e) { if (e instanceof GitHubError && e.status === 409) return []; throw e }   // 409 = empty repo
       if (t.truncated) throw new GitHubError('other', 200, 'tree truncated')
       return t.tree.filter(e => e.type === 'blob').map(({ path, sha }) => ({ path, sha }))
     },

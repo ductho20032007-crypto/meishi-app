@@ -7,7 +7,9 @@ import { merge3 } from '../lib/merge.js'
 const tableOf = path => path.startsWith('cards/') ? 'cards' : path.startsWith('companies/') ? 'companies' : null
 const idOf = path => path.split('/').pop().replace(/\.json$/, '')
 const APP_PATH = /^(?:(?:cards|companies)\/[^/]+\.json|images\/[^/]+)$/
-const FATAL = new Set(['network', 'auth', 'ratelimit'])   // abort the whole run; everything else is per-item
+// abort the whole run (items stay as they are); everything else is per-item
+const FATAL = new Set(['network', 'auth', 'ratelimit', 'server', 'repomissing'])
+const repoMissing = e => e?.kind === 'notfound' ? Object.assign(new Error('repository not found'), { kind: 'repomissing', status: 404 }) : e
 
 export function createSync({ db, gh }) {
   // single-flight: push / pull / resolve / syncAll never overlap
@@ -80,19 +82,23 @@ export function createSync({ db, gh }) {
     await db.outbox.delete(item.seq)
   }
   async function _push() {
-    const items = await db.outbox.orderBy('seq').filter(i => i.state === 'ready').toArray()
+    const items = await db.outbox.orderBy('seq').filter(i => i.state !== 'conflict').toArray()   // 'error' items are retried every run
+    if (items.length) { try { await gh.ping() } catch (e) { throw repoMissing(e) } }   // repo-wide 404 must not be read per-file
     for (const item of items) {
       try { await attempt(item) }
       catch (e) {
         if (FATAL.has(e?.kind)) throw e
-        await db.outbox.update(item.seq, { state: 'error', error: e?.kind || 'other' })   // retried only when re-enqueued
+        await db.outbox.update(item.seq, { state: 'error', error: e?.kind || 'other' })   // retried on the next run
       }
     }
   }
   const tables = () => [db.cards, db.companies, db.images, db.files, db.outbox]
   async function _pull() {
-    const remote = new Map((await gh.getTree()).filter(e => APP_PATH.test(e.path)).map(e => [e.path, e.sha]))
+    let tree
+    try { tree = await gh.getTree() } catch (e) { throw repoMissing(e) }
+    const remote = new Map(tree.filter(e => APP_PATH.test(e.path)).map(e => [e.path, e.sha]))
     const known = await db.files.toArray()
+    // an empty remote while we know of >= 3 synced files looks like a wiped/misread repo, not a mass deletion
     if (remote.size === 0 && known.length >= 3) return { updated: 0, deleted: 0, suspicious: true }
     const pendingNow = path => db.outbox.where('path').equals(path).count()
     let updated = 0, deleted = 0

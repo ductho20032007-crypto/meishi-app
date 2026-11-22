@@ -17,7 +17,7 @@ describe('github client', () => {
     expect(url).toBe('https://api.github.com/repos/me/d/contents/cards/a.json')
     expect(JSON.parse(init.body)).toMatchObject({ content: 'Zm9v', sha: 'old' })
   })
-  it.each([[401, 'auth'], [403, 'auth'], [404, 'notfound'], [422, 'conflict']])('maps %i → %s', async (s, kind) => {
+  it.each([[401, 'auth'], [403, 'auth'], [422, 'conflict'], [500, 'server'], [502, 'server'], [503, 'server']])('maps %i → %s', async (s, kind) => {
     const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(s, { message: 'x' })) })
     await expect(gh.getTree()).rejects.toMatchObject({ kind })
   })
@@ -36,8 +36,6 @@ describe('github client', () => {
   it('empty repo (409 / "empty") gives empty tree', async () => {
     const a = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(409, { message: 'Git Repository is empty.' })) })
     expect(await a.getTree()).toEqual([])
-    const b = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(404, { message: 'repository is empty' })) })
-    expect(await b.getTree()).toEqual([])
   })
   it('truncated tree is an error', async () => {
     const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(200, { tree: [], truncated: true })) })
@@ -69,5 +67,15 @@ describe('github client', () => {
     it('403 otherwise is auth', async () => {
       expect((await kindOf(403, { message: 'Resource not accessible' })).kind).toBe('auth')
     })
+  })
+  it('repo-wide 404 maps to repomissing for ping and getTree, but stays notfound per file', async () => {
+    const mk = () => createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(404, { message: 'Not Found' })) })
+    await expect(mk().ping()).rejects.toMatchObject({ kind: 'repomissing' })
+    await expect(mk().getTree()).rejects.toMatchObject({ kind: 'repomissing' })
+    await expect(mk().getFile('cards/a.json')).rejects.toMatchObject({ kind: 'notfound' })
+  })
+  it('"empty" message only means an empty repo on 409', async () => {
+    const gh = createGitHub({ token: 't', repo: 'me/d', fetch: vi.fn().mockResolvedValue(res(404, { message: 'repository is empty' })) })
+    await expect(gh.getTree()).rejects.toMatchObject({ kind: 'repomissing' })
   })
 })

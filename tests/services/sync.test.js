@@ -9,6 +9,7 @@ function fakeGh() {
   const files = new Map(); let n = 0
   return {
     files,
+    async ping() {},
     async getTree() { return [...files].map(([path, f]) => ({ path, sha: f.sha })) },
     async getBlob(sha) { return [...files.values()].find(f => f.sha === sha).content },
     async getFile(path) { const f = files.get(path); if (!f) throw new GitHubError('notfound', 404, ''); return f },
@@ -143,7 +144,8 @@ describe('sync', () => {
       expect(gh.files.has('cards/b.json')).toBe(true)
       const left = await db.outbox.toArray()
       expect(left).toHaveLength(1); expect(left[0]).toMatchObject({ path: 'cards/a.json', state: 'error', error: 'other' })
-      await sync.push(); expect(gh.files.has('cards/a.json')).toBe(false)   // no automatic retry
+      await sync.push(); expect(gh.files.has('cards/a.json')).toBe(false)   // retried every run, still failing, still not blocking
+      expect((await db.outbox.toArray())[0]).toMatchObject({ path: 'cards/a.json', state: 'error', error: 'other' })
       fail = false; await sync.enqueue('cards/a.json'); await sync.push()
       expect(gh.files.has('cards/a.json')).toBe(true); expect(await db.outbox.count()).toBe(0)
     })
@@ -189,6 +191,35 @@ describe('sync', () => {
       gh.files.clear()
       expect(await sync.pull()).toEqual({ updated: 0, deleted: 0, suspicious: true })
       expect(await db.cards.count()).toBe(3)
+    })
+    it('repo-wide 404 aborts as repomissing and leaves the queue untouched; recovers later', async () => {
+      await seed('cards/a.json', { id: 'a', name: 'A' }); await seed('cards/c.json', { id: 'c', name: 'C' }, 'x2')
+      await sync.pull()
+      await db.cards.update('a', { name: 'edited' }); await sync.enqueue('cards/a.json')
+      await db.cards.delete('c'); await sync.enqueue('cards/c.json', 'delete')
+      const snap = async () => JSON.stringify([await db.outbox.toArray(), await db.files.toArray(), await db.conflicts.toArray()])
+      const before = await snap()
+      const orig = { ...gh }
+      for (const k of ['ping', 'getTree', 'getBlob', 'getFile', 'putFile', 'deleteFile']) gh[k] = async () => { throw new GitHubError('notfound', 404, 'Not Found') }
+      await expect(sync.syncAll()).rejects.toMatchObject({ kind: 'repomissing' })
+      expect(await snap()).toBe(before)
+      Object.assign(gh, orig)
+      await sync.syncAll()
+      expect(remoteJson(gh, 'cards/a.json').name).toBe('edited'); expect(gh.files.has('cards/c.json')).toBe(false)
+      expect(await db.outbox.count()).toBe(0)
+    })
+    it('pull alone also maps a repo-wide 404 to repomissing', async () => {
+      gh.getTree = async () => { throw new GitHubError('notfound', 404, '') }
+      await expect(sync.pull()).rejects.toMatchObject({ kind: 'repomissing' })
+    })
+    it('5xx aborts the run, keeps the item ready, and succeeds on the next run', async () => {
+      const put = gh.putFile; let fail = true
+      gh.putFile = async (...a) => { if (fail) throw new GitHubError('server', 502, 'bad gateway'); return put(...a) }
+      await db.cards.put({ id: 'a', name: 'A' }); await sync.enqueue('cards/a.json')
+      await expect(sync.push()).rejects.toMatchObject({ kind: 'server' })
+      expect((await db.outbox.toArray())[0].state).toBe('ready')
+      fail = false; await sync.push()
+      expect(gh.files.has('cards/a.json')).toBe(true); expect(await db.outbox.count()).toBe(0)
     })
   })
 })
