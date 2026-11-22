@@ -94,12 +94,22 @@ images/{cardId}-back.jpg      (tùy chọn)
 - **Xung đột** (409/422 do SHA lệch): tải bản mới → nếu chỉ khác trường không trùng nhau thì tự gộp theo trường,
   nếu trùng trường thì hiện hộp thoại "Giữ bản của máy này / bản trên cloud".
 - Auth: fine-grained Personal Access Token chỉ cấp quyền Contents read/write cho repo `meishi-data`.
-  Token + Gemini key lưu trong localStorage từng thiết bị.
+
+### 3.5 Cấp key cho thiết bị (không có ô nhập key trong app)
+- **Key không bao giờ nằm trong source/bundle** (repo app là public). Nguồn duy nhất: file `.env.local`
+  trên máy phát triển (gitignored) gồm `MEISHI_GITHUB_TOKEN`, `MEISHI_GITHUB_REPO`, `MEISHI_GEMINI_KEY`.
+- Script `npm run setup-link` đọc `.env.local`, tạo **link cài đặt**:
+  `https://<user>.github.io/meishi-app/#/setup?c=<payload>` với `payload` = base64url(JSON `{v:1, gh, repo, gk}`),
+  in link ra terminal và lưu mã QR `setup-qr.png` (gitignored) để quét bằng điện thoại.
+- Route `#/setup`: đọc `c`, kiểm tra hợp lệ (gọi thử GitHub API + Gemini models), lưu vào localStorage,
+  **xóa payload khỏi URL** (`history.replaceState`) rồi chuyển về ①. Payload sai → báo lỗi, không lưu gì.
+- Phần sau `#` không được gửi lên server, nhưng link chứa key thật: chỉ quét trên thiết bị của mình, không chia sẻ.
+- Chưa có key → màn chào "Chưa cài đặt — hãy quét QR cài đặt"; app vẫn mở được ⑧ Từ điển.
 
 ## 4. OCR (Gemini)
 
 - Sau khi bấm **Lưu** ở màn Chụp: lưu card `status: pending` + ảnh vào outbox, sau đó gọi Gemini
-  (model Flash, tên model cấu hình được trong Cài đặt) với ảnh mặt trước (+ mặt sau nếu có),
+  (model mặc định `gemini-flash-latest`, đổi được trong Cài đặt) với ảnh mặt trước (+ mặt sau nếu có),
   dùng structured output (JSON schema) trả về các trường ở 3.2 (trừ id/metadata).
 - Prompt yêu cầu: tách `deptPath` thành từng tầng; ánh xạ `title` → `rank` theo bảng 4.1;
   giữ nguyên chữ gốc (Nhật/Việt/Anh); điền `nameKana` nếu danh thiếp có furigana hoặc suy ra được.
@@ -142,10 +152,10 @@ nhãn nhóm cấp bậc theo ngôn ngữ giao diện.
 | `#/card/:id/edit` | ④ Sửa | Form tất cả trường; trường do OCR điền có viền nhấn để kiểm tra; chọn công ty, sửa `deptPath` (dạng các ô tầng), `rank`, chọn `reportsTo` (danh sách người cùng công ty). |
 | `#/companies` | ⑤ Danh sách công ty | Tên công ty, số danh thiếp; tìm kiếm. |
 | `#/company/:id?focus=:personId` | ⑥ Sơ đồ tổ chức (dạng khối) | Có `focus`: **(1) Chuỗi báo cáo** — thẻ người nối dọc từ cấp cao nhất công ty xuống người được focus (thẻ của người đó tô màu nhấn); **(2) Cùng phòng** — lưới 2 cột các người khác trong phòng ban sâu nhất của người đó. Luôn có: **(3) Toàn công ty** — sơ đồ khối từ trên xuống (công ty → tầng phòng ban), mỗi khối ghi tên phòng, trưởng nhánh, số người; nhánh chứa người được focus viền/tô màu nhấn; khối có thể cuộn ngang khi một tầng có nhiều hơn 3 phòng. Chạm khối → mở danh sách người của khối đó (bottom sheet). Placeholder hiện nét đứt. Chế độ **Chỉnh sửa** (nút trên header): thêm placeholder, đổi tên/gộp phòng ban (ghi `deptAliases`), đặt `reportsTo`. Chạm vào người có danh thiếp → ③. |
-| `#/settings` | ⑦ Cài đặt | GitHub owner/repo/token (nút Kiểm tra kết nối), Gemini key + model, trạng thái sync (số mục trong outbox, lần sync cuối, nút Sync ngay), xuất CSV / vCard tất cả, ghi chú quyền riêng tư, link tới ⑧. |
+| `#/settings` | ⑦ Cài đặt | **Không có ô nhập key.** Ngôn ngữ; trạng thái kết nối GitHub (repo, ✓/✗, nút Kiểm tra) và Gemini (✓/✗, chọn model); nút "Xóa key khỏi máy này"; trạng thái sync (số mục trong outbox, lần sync cuối, nút Sync ngay), xuất CSV / vCard tất cả, ghi chú quyền riêng tư, link tới ⑧. |
 | `#/titles?q=` | ⑧ Từ điển chức danh | Trang **tĩnh** (dữ liệu đóng gói trong app, không cần token/mạng). Ô tìm (Nhật, kana, Việt, Anh); danh sách nhóm theo cấp bậc 1→7; mỗi dòng: chức danh Nhật + cách đọc, tương đương tiếng Việt, tiếng Anh, ghi chú ngắn. Ở màn ③, chạm vào chức danh → mở ⑧ với `q` = chức danh đó; nếu chức danh có trong từ điển thì ③ hiện luôn nghĩa tiếng Việt bên cạnh (VD: `課長 · Trưởng ban`). |
 
-Lần đầu mở app chưa có cấu hình → chuyển tới ⑦ (riêng ⑧ vẫn mở được khi chưa cấu hình).
+Lần đầu mở app chưa có key → màn chào "Quét QR cài đặt" (mục 3.5); riêng ⑧ vẫn mở được.
 
 ### 5.2 Nội dung từ điển chức danh (v1)
 Lưu ý hiển thị đầu trang: cách dịch tương đương phụ thuộc quy mô công ty; ở công ty Nhật nhỏ, 部長 có thể tương đương
@@ -210,7 +220,7 @@ Khớp chức danh: bỏ phần phòng ban đứng trước (VD `営業部長` �
 6. **Khối toàn công ty** = cây phòng ban ở bước 2; mỗi khối: tên, trưởng nhánh, tổng số người (gồm cả phòng con).
 
 ## 6. Xử lý lỗi
-- Token sai / hết hạn (401/403): banner đỏ "Không đồng bộ được — kiểm tra token", dữ liệu vẫn dùng offline.
+- Token sai / hết hạn (401/403): banner đỏ "Không đồng bộ được — key hết hạn, hãy quét lại QR cài đặt", dữ liệu vẫn dùng offline.
 - Rate limit GitHub (403 + header rate-limit): tạm dừng worker tới thời điểm reset.
 - Repo chưa có / sai tên (404): báo ở màn Cài đặt.
 - Ảnh quá lớn / định dạng lạ (HEIC trên trình duyệt không hỗ trợ): thông báo, gợi ý chụp lại bằng nút 📷.
@@ -240,8 +250,8 @@ src/
 - `github.js` / `gemini.js` test với fetch giả.
 - Kiểm thử tay trên điện thoại thật (iOS Safari, Android Chrome): chụp, offline → online, 2 thiết bị sửa cùng thẻ.
 
-## 9. Thiết lập ban đầu (người dùng làm 1 lần)
-1. Tạo repo private `meishi-data` trên GitHub (có 1 commit khởi tạo).
-2. Tạo fine-grained token chỉ cho repo đó, quyền Contents: Read & write.
-3. Lấy Gemini API key tại Google AI Studio.
-4. Mở app → Cài đặt → nhập 3 thứ trên trên mỗi thiết bị.
+## 9. Thiết lập ban đầu
+Đã xong (2026-11-22): repo `meishi-app` (public), `meishi-data` (private), fine-grained token `meishi-app`
+(chỉ `meishi-data`, Contents R/W, hết hạn 2027-11-21), Gemini key `meishi-app` — lưu ở `.env.local` trên máy phát triển.
+Mỗi thiết bị mới: chạy `npm run setup-link` → quét QR (mục 3.5).
+Khi token/key hết hạn hoặc bị thu hồi: tạo mới, cập nhật `.env.local`, tạo lại QR và quét lại.

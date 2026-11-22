@@ -5,3 +5,4 @@ dist/
 *.local
 .playwright-mcp/
 coverage/
+setup-qr.png
