@@ -19,3 +19,8 @@ it('unions tags when both sides changed', () => {
   expect(r.conflicts).toEqual([])
   expect(r.merged.tags).toEqual(['a', 'b', 'c'])
 })
+it('tags union respects deletions relative to base', () => {
+  const r = merge3({ ...base, tags: ['a'] }, { ...base, tags: ['b'] }, { ...base, tags: ['a', 'c'] })
+  expect(r.conflicts).toEqual([])
+  expect(r.merged.tags).toEqual(['b', 'c'])
+})

@@ -715,6 +715,11 @@ it('unions tags when both sides changed', () => {
   expect(r.conflicts).toEqual([])
   expect(r.merged.tags).toEqual(['a', 'b', 'c'])
 })
+it('tags union respects deletions relative to base', () => {
+  const r = merge3({ ...base, tags: ['a'] }, { ...base, tags: ['b'] }, { ...base, tags: ['a', 'c'] })
+  expect(r.conflicts).toEqual([])
+  expect(r.merged.tags).toEqual(['b', 'c'])
+})
 ```
 
 ```js
@@ -800,7 +805,11 @@ export function merge3(base, local, remote) {
     if (eq(l, r)) merged[k] = l
     else if (base && eq(l, b)) merged[k] = r
     else if (base && eq(r, b)) merged[k] = l
-    else if (k === 'tags' && Array.isArray(l) && Array.isArray(r)) merged[k] = [...l, ...r.filter(x => !l.includes(x))]
+    else if (k === 'tags' && Array.isArray(l) && Array.isArray(r)) {
+      const u = [...l, ...r.filter(x => !l.includes(x))]
+      const bt = Array.isArray(b) ? b : null
+      merged[k] = bt ? u.filter(x => !(bt.includes(x) && (!l.includes(x) || !r.includes(x)))) : u
+    }
     else { conflicts.push(k); merged[k] = l }
   }
   return { merged, conflicts }
