@@ -4,7 +4,8 @@ describe('normalizeCompany', () => {
   it.each([
     ['株式会社ABC商事', 'abc商事'], ['ABC商事株式会社', 'abc商事'], ['㈱ＡＢＣ商事', 'abc商事'], ['(株)ABC商事', 'abc商事'],
     ['ABC Shoji Co., Ltd.', 'abcshoji'], ['Sakura Inc.', 'sakura'], ['Công ty CP Minh Phát', 'minhphát'],
-    ['Công ty TNHH Sông Hồng Tech', 'sônghồngtech'], ['Minh Phát JSC', 'minhphát']
+    ['Công ty TNHH Sông Hồng Tech', 'sônghồngtech'], ['Minh Phát JSC', 'minhphát'],
+    ['Incredible Co., Ltd.', 'incredible'], ['Taco Ltd.', 'taco'], ['Corpus Inc.', 'corpus']
   ])('%s → %s', (a, b) => expect(normalizeCompany(a)).toBe(b))
 })
 describe('matchCompany', () => {

@@ -40,13 +40,13 @@ export const TITLES = [
   { rank: 5, ja: 'グループリーダー', reading: 'group leader', vi: 'Trưởng nhóm (cấp ban)', en: 'Group Leader' },
   { rank: 6, ja: '係長', reading: 'かかりちょう', vi: 'Trưởng nhóm / Tổ trưởng', en: 'Team Leader / Supervisor' },
   { rank: 6, ja: '主任', reading: 'しゅにん', vi: 'Nhân viên chính / Chủ nhiệm', en: 'Chief / Senior Staff' },
-  { rank: 6, ja: '主査', reading: 'しゅさ', vi: 'Chuyên viên chính', en: 'Senior Specialist' },
+  { rank: 6, ja: '主査', reading: 'しゅさ', vi: 'Chuyên viên chính', en: 'Chief Examiner / Senior Specialist' },
   { rank: 6, ja: 'チームリーダー', reading: 'team leader', vi: 'Trưởng nhóm', en: 'Team Leader' },
   { rank: 6, ja: '班長', reading: 'はんちょう', vi: 'Tổ trưởng (sản xuất)', en: 'Foreman' },
   { rank: 7, ja: '担当', reading: 'たんとう', vi: 'Nhân viên phụ trách', en: 'Staff in charge' },
   { rank: 7, ja: '社員', reading: 'しゃいん', vi: 'Nhân viên', en: 'Employee' },
   { rank: 7, ja: 'エンジニア / 技術者', reading: 'ぎじゅつしゃ', vi: 'Kỹ sư', en: 'Engineer' },
   { rank: 7, ja: '秘書', reading: 'ひしょ', vi: 'Thư ký', en: 'Secretary' },
-  { rank: 7, ja: '嘱託', reading: 'しょくたく', vi: 'Nhân viên hợp đồng (thường sau tuổi hưu)', en: 'Contract Staff' },
+  { rank: 7, ja: '嘱託', reading: 'しょくたく', vi: 'Nhân viên hợp đồng (thường là sau tuổi nghỉ hưu)', en: 'Contract Staff' },
   { rank: 7, ja: '派遣社員', reading: 'はけんしゃいん', vi: 'Nhân viên phái cử', en: 'Temporary Staff' }
 ]

@@ -132,7 +132,8 @@ const routes = [
   { path: '/settings', component: () => import('./views/SettingsView.vue') },
   { path: '/titles', component: () => import('./views/TitlesView.vue'), props: r => ({ q: r.query.q || '' }) },
   { path: '/setup', component: () => import('./views/SetupView.vue'), props: r => ({ c: r.query.c || '' }) },
-  { path: '/welcome', component: () => import('./views/WelcomeView.vue') }
+  { path: '/welcome', component: () => import('./views/WelcomeView.vue') },
+  { path: '/:p(.*)*', redirect: '/' }
 ]
 export const router = createRouter({ history: createWebHashHistory(), routes })
 const OPEN = ['/setup', '/titles', '/welcome']
@@ -150,9 +151,8 @@ router.beforeEach(to => (!hasKeys() && !OPEN.includes(to.path)) ? '/welcome' : t
 - [ ] **Step 1: tests**
 
 ```js
-// tests/lib/b64.test.js
 import { describe, it, expect } from 'vitest'
-import { utf8ToB64, b64ToUtf8, toB64url, fromB64url } from '../../src/lib/b64.js'
+import { utf8ToB64, b64ToUtf8, toB64url, fromB64url, bytesToB64, b64ToBytes } from '../../src/lib/b64.js'
 describe('b64', () => {
   it('round-trips unicode', () => {
     const s = '山田 太郎 · Trưởng phòng'
@@ -165,6 +165,11 @@ describe('b64', () => {
     const u = toB64url('??>>~~')
     expect(u).not.toMatch(/[+/=]/)
     expect(fromB64url(u)).toBe('??>>~~')
+  })
+  it('round-trips 100 KB of bytes', () => {
+    const b = new Uint8Array(100 * 1024)
+    for (let i = 0; i < b.length; i += 65536) crypto.getRandomValues(b.subarray(i, i + 65536))
+    expect(b64ToBytes(bytesToB64(b))).toEqual(b)
   })
 })
 ```
@@ -238,7 +243,7 @@ export const newPlaceholderId = () => `p-${rand(6)}`
 
 ```js
 import { describe, it, expect } from 'vitest'
-import { matchTitle, rankFor } from '../../src/lib/rank.js'
+import { matchTitle, rankFor, viFor } from '../../src/lib/rank.js'
 import { TITLES } from '../../src/data/titles.js'
 describe('matchTitle', () => {
   it.each([
@@ -259,6 +264,25 @@ describe('matchTitle', () => {
   ])('fallback %s', (t, rank) => {
     expect(rankFor(t)).toBe(rank)
   })
+  it.each([['Service Manager', 5], ['Chief Technology Officer', 2], ['EVP', 2], ['CTO', 2], ['CEO', 1], ['Chief Executive Officer', 1], ['Phó phòng', 4]])('fallback %s', (t, rank) => {
+    expect(rankFor(t)).toBe(rank)
+  })
+  it('exact English / Vietnamese match returns the entry', () => {
+    expect(matchTitle('Managing Director')).toMatchObject({ rank: 2, entry: { ja: '常務取締役' } })
+    expect(matchTitle('Trưởng phòng')).toMatchObject({ rank: 4, entry: { ja: '部長' } })
+  })
+  it.each([
+    ['取締役社長', 1, '社長'], ['社長室長', 4, '室長'], ['代表取締役会長', 1, '会長'], ['副社長', 2, '副社長']
+  ])('JA tie-break %s', (t, rank, ja) => {
+    expect(matchTitle(t)).toMatchObject({ rank, entry: { ja } })
+  })
+  it('deputy prefix lowers rank by one', () => {
+    expect(matchTitle('副部長')).toEqual({ entry: null, rank: 5 })
+  })
+  it('viFor', () => {
+    expect(viFor('課長')).toBe('Trưởng ban / Trưởng bộ phận')
+    expect(viFor('xyz')).toBeNull()
+  })
   it('dictionary has 41 entries across ranks 1..7', () => {
     expect(TITLES).toHaveLength(41)
     expect(new Set(TITLES.map(t => t.rank))).toEqual(new Set([1, 2, 3, 4, 5, 6, 7]))
@@ -268,7 +292,7 @@ describe('matchTitle', () => {
 
 - [ ] **Step 2:** run → FAIL.
 
-- [ ] **Step 3: implementation** — `src/data/titles.js` holds exactly the 41 rows of spec §5.2 (fields `rank, ja, reading, vi, en`; `ja` may contain alternatives separated by ` / `) plus `RANK_LABELS`:
+- [ ] **Step 3: implementation** — `src/data/titles.js` holds exactly the 41 rows of spec §5.2 (fields `rank, ja, reading, vi, en`; `ja`/`en`/`vi` may contain alternatives separated by ` / `) plus `RANK_LABELS`:
 
 ```js
 export const RANK_LABELS = {
@@ -313,14 +337,14 @@ export const TITLES = [
   { rank: 5, ja: 'グループリーダー', reading: 'group leader', vi: 'Trưởng nhóm (cấp ban)', en: 'Group Leader' },
   { rank: 6, ja: '係長', reading: 'かかりちょう', vi: 'Trưởng nhóm / Tổ trưởng', en: 'Team Leader / Supervisor' },
   { rank: 6, ja: '主任', reading: 'しゅにん', vi: 'Nhân viên chính / Chủ nhiệm', en: 'Chief / Senior Staff' },
-  { rank: 6, ja: '主査', reading: 'しゅさ', vi: 'Chuyên viên chính', en: 'Senior Specialist' },
+  { rank: 6, ja: '主査', reading: 'しゅさ', vi: 'Chuyên viên chính', en: 'Chief Examiner / Senior Specialist' },
   { rank: 6, ja: 'チームリーダー', reading: 'team leader', vi: 'Trưởng nhóm', en: 'Team Leader' },
   { rank: 6, ja: '班長', reading: 'はんちょう', vi: 'Tổ trưởng (sản xuất)', en: 'Foreman' },
   { rank: 7, ja: '担当', reading: 'たんとう', vi: 'Nhân viên phụ trách', en: 'Staff in charge' },
   { rank: 7, ja: '社員', reading: 'しゃいん', vi: 'Nhân viên', en: 'Employee' },
   { rank: 7, ja: 'エンジニア / 技術者', reading: 'ぎじゅつしゃ', vi: 'Kỹ sư', en: 'Engineer' },
   { rank: 7, ja: '秘書', reading: 'ひしょ', vi: 'Thư ký', en: 'Secretary' },
-  { rank: 7, ja: '嘱託', reading: 'しょくたく', vi: 'Nhân viên hợp đồng (thường sau tuổi hưu)', en: 'Contract Staff' },
+  { rank: 7, ja: '嘱託', reading: 'しょくたく', vi: 'Nhân viên hợp đồng (thường là sau tuổi nghỉ hưu)', en: 'Contract Staff' },
   { rank: 7, ja: '派遣社員', reading: 'はけんしゃいん', vi: 'Nhân viên phái cử', en: 'Temporary Staff' }
 ]
 ```
@@ -328,25 +352,59 @@ export const TITLES = [
 ```js
 // src/lib/rank.js
 import { TITLES } from '../data/titles.js'
+const norm = s => (s || '').normalize('NFKC').trim().toLowerCase()
 const VARIANTS = TITLES.flatMap(e => e.ja.split(' / ').map(v => ({ key: v.normalize('NFKC').replace(/\s/g, ''), entry: e })))
-// order matters: rank 2 before 1 ("vice president" contains "president"), 4 before 5 ("senior manager")
+// exact English / Vietnamese names -> entries (first entry wins; ambiguous ranks are skipped)
+const EXACT = new Map()
+for (const e of TITLES) {
+  for (const n of [...e.en.split(' / '), ...e.vi.split(' / ')].map(norm)) {
+    if (!EXACT.has(n)) EXACT.set(n, [])
+    EXACT.get(n).push(e)
+  }
+}
+// order matters: rank 1 CEO before 2, 2 before 1 ("vice president" contains "president"), 4 before 5 ("senior manager")
 const FALLBACK = [
-  [2, /vice|phó tổng|\bc[a-z]o\b(?<!ceo)|\bvp\b|executive officer/i],
-  [1, /\bceo\b|president|chairman|chủ tịch|tổng giám đốc/i],
+  [1, /\bceo\b|chief executive officer/i],
+  [2, /\bvice\b|phó tổng|\b(c[a-z]o|svp|evp|vp)\b(?<!ceo)|(?<!chief )executive officer|chief (?!executive).* officer/i],
+  [1, /president|chairman|chủ tịch|tổng giám đốc/i],
   [3, /director|giám đốc|head of/i],
-  [4, /senior manager|general manager|trưởng phòng/i],
-  [5, /manager|phó phòng|trưởng ban/i],
+  [4, /senior manager|general manager|trưởng phòng|phó phòng/i],
+  [5, /manager|trưởng ban/i],
   [6, /leader|supervisor|trưởng nhóm|tổ trưởng/i]
 ]
+const pick = (a, b, t) => {
+  if (!a) return b
+  if (b.key.length !== a.key.length) return b.key.length > a.key.length ? b : a
+  const sa = t.endsWith(a.key), sb = t.endsWith(b.key)
+  if (sa !== sb) return sb ? b : a
+  return b.entry.rank < a.entry.rank ? b : a
+}
 export function matchTitle(title) {
   const t = (title || '').normalize('NFKC').replace(/\s/g, '')
   if (!t) return { entry: null, rank: 7 }
-  let best = null
-  for (const v of VARIANTS) {
-    if (!t.includes(v.key)) continue
-    if (!best || v.key.length > best.key.length || (v.key.length === best.key.length && v.entry.rank < best.entry.rank)) best = v
+  const hits = VARIANTS.filter(v => t.includes(v.key))
+  if (hits.length) {
+    let best
+    if (hits.some(v => v.key.includes('取締役') && t.startsWith(v.key))) {
+      // board-director prefix ("取締役社長", "代表取締役会長"): the highest post wins; ties -> suffix, then longest
+      best = hits.reduce((a, b) => {
+        if (!a) return b
+        if (a.entry.rank !== b.entry.rank) return b.entry.rank < a.entry.rank ? b : a
+        const sa = t.endsWith(a.key), sb = t.endsWith(b.key)
+        if (sa !== sb) return sb ? b : a
+        return b.key.length > a.key.length ? b : a
+      }, null)
+    } else {
+      best = hits.reduce((a, b) => pick(a, b, t), null)
+    }
+    const idx = t.endsWith(best.key) ? t.length - best.key.length : t.indexOf(best.key)
+    if (idx > 0 && t[idx - 1] === '副' && !best.key.startsWith('副')) {
+      return { entry: null, rank: Math.min(7, best.entry.rank + 1) }
+    }
+    return { entry: best.entry, rank: best.entry.rank }
   }
-  if (best) return { entry: best.entry, rank: best.entry.rank }
+  const ex = EXACT.get(norm(title))
+  if (ex && new Set(ex.map(e => e.rank)).size === 1) return { entry: ex[0], rank: ex[0].rank }
   const raw = (title || '').normalize('NFKC')
   for (const [rank, re] of FALLBACK) if (re.test(raw)) return { entry: null, rank }
   return { entry: null, rank: 7 }
@@ -372,7 +430,8 @@ describe('normalizeCompany', () => {
   it.each([
     ['株式会社ABC商事', 'abc商事'], ['ABC商事株式会社', 'abc商事'], ['㈱ＡＢＣ商事', 'abc商事'], ['(株)ABC商事', 'abc商事'],
     ['ABC Shoji Co., Ltd.', 'abcshoji'], ['Sakura Inc.', 'sakura'], ['Công ty CP Minh Phát', 'minhphát'],
-    ['Công ty TNHH Sông Hồng Tech', 'sônghồngtech'], ['Minh Phát JSC', 'minhphát']
+    ['Công ty TNHH Sông Hồng Tech', 'sônghồngtech'], ['Minh Phát JSC', 'minhphát'],
+    ['Incredible Co., Ltd.', 'incredible'], ['Taco Ltd.', 'taco'], ['Corpus Inc.', 'corpus']
   ])('%s → %s', (a, b) => expect(normalizeCompany(a)).toBe(b))
 })
 describe('matchCompany', () => {
@@ -401,13 +460,16 @@ it('normalizeDept trims and unifies width', () => expect(normalizeDept(' 第１�
 // src/lib/normalize.js
 const LEGAL = [
   /株式会社/g, /有限会社/g, /合同会社/g, /\(株\)/g, /\(有\)/g,
-  /co\.?,?\s*ltd\.?/gi, /\bltd\.?/gi, /\binc\.?/gi, /\bcorp(oration)?\.?/gi, /\bjsc\b/gi, /\bllc\b/gi,
+  /\bco\.?,?\s*ltd\b\.?/gi, /\bltd\b\.?/gi, /\binc\b\.?/gi, /\bcorp(oration)?\b\.?/gi, /\bjsc\b/gi, /\bllc\b/gi,
   /công ty\s+(tnhh|cổ phần|cp)(\s+(một thành viên|mtv))?/gi, /^công ty\s+/gi
 ]
+const PUNCT = /[\s.,・·\-_'"()&]/g
 export function normalizeCompany(name) {
-  let s = (name || '').normalize('NFKC').toLowerCase()
+  const plain = (name || '').normalize('NFKC').toLowerCase()
+  let s = plain
   for (const re of LEGAL) s = s.replace(re, ' ')
-  return s.replace(/[\s.,・·\-_'"()&]/g, '')
+  s = s.replace(PUNCT, '')
+  return s || plain.replace(PUNCT, '')
 }
 export function matchCompany(raw, companies) {
   const n = normalizeCompany(raw)

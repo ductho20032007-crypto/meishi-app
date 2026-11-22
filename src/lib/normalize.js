@@ -1,12 +1,15 @@
 const LEGAL = [
   /株式会社/g, /有限会社/g, /合同会社/g, /\(株\)/g, /\(有\)/g,
-  /co\.?,?\s*ltd\.?/gi, /\bltd\.?/gi, /\binc\.?/gi, /\bcorp(oration)?\.?/gi, /\bjsc\b/gi, /\bllc\b/gi,
+  /\bco\.?,?\s*ltd\b\.?/gi, /\bltd\b\.?/gi, /\binc\b\.?/gi, /\bcorp(oration)?\b\.?/gi, /\bjsc\b/gi, /\bllc\b/gi,
   /công ty\s+(tnhh|cổ phần|cp)(\s+(một thành viên|mtv))?/gi, /^công ty\s+/gi
 ]
+const PUNCT = /[\s.,・·\-_'"()&]/g
 export function normalizeCompany(name) {
-  let s = (name || '').normalize('NFKC').toLowerCase()
+  const plain = (name || '').normalize('NFKC').toLowerCase()
+  let s = plain
   for (const re of LEGAL) s = s.replace(re, ' ')
-  return s.replace(/[\s.,・·\-_'"()&]/g, '')
+  s = s.replace(PUNCT, '')
+  return s || plain.replace(PUNCT, '')
 }
 export function matchCompany(raw, companies) {
   const n = normalizeCompany(raw)

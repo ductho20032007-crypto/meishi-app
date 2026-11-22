@@ -10,7 +10,8 @@ const routes = [
   { path: '/settings', component: () => import('./views/SettingsView.vue') },
   { path: '/titles', component: () => import('./views/TitlesView.vue'), props: r => ({ q: r.query.q || '' }) },
   { path: '/setup', component: () => import('./views/SetupView.vue'), props: r => ({ c: r.query.c || '' }) },
-  { path: '/welcome', component: () => import('./views/WelcomeView.vue') }
+  { path: '/welcome', component: () => import('./views/WelcomeView.vue') },
+  { path: '/:p(.*)*', redirect: '/' }
 ]
 export const router = createRouter({ history: createWebHashHistory(), routes })
 const OPEN = ['/setup', '/titles', '/welcome']
