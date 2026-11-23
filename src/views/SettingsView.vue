@@ -86,8 +86,8 @@ async function removeKeys() {
   if (!window.confirm(n ? t('settings.removeConfirm', n) : t('settings.removeConfirmClean'))) return
   removing.value = true
   resetApp()          // disposes the repo (aborts OCR)
+  clearKeys()         // before resetStatus(): it re-binds to a new app instance while keys still exist
   resetStatus()
-  clearKeys()
   try { db.close(); await db.delete() } catch (e) { console.warn('db.delete', e) }
   // reload for a clean in-memory state (fresh Dexie instance, no live queries on the deleted DB)
   history.replaceState(null, '', location.pathname + location.search + '#/welcome')
