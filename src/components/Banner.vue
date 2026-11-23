@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { status } from '../stores/status.js'
 import Icon from './Icon.vue'
+import ConflictDialog from './ConflictDialog.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -24,6 +25,9 @@ const dismissed = ref(null)
 const visible = computed(() => notice.value && dismissed.value !== notice.value.id + notice.value.text)
 const dismiss = () => { dismissed.value = notice.value.id + notice.value.text }
 const showLink = computed(() => notice.value?.action && route.path !== '/settings')
+// conflicts: tapping the banner opens the review dialog
+const showConflicts = ref(false)
+const isConflict = computed(() => notice.value?.id === 'conflicts')
 // the banner already pads for the top safe area; pages drop theirs while it is shown (see base.css)
 watchEffect(() => document.documentElement.classList.toggle('banner-on', !!visible.value))
 onBeforeUnmount(() => document.documentElement.classList.remove('banner-on'))
@@ -32,12 +36,15 @@ onBeforeUnmount(() => document.documentElement.classList.remove('banner-on'))
 <template>
   <div v-if="visible" class="banner" :class="notice.tone" :role="notice.tone === 'danger' ? 'alert' : 'status'">
     <Icon :name="notice.icon" :size="18" class="lead" />
-    <p class="msg">{{ notice.text }}</p>
-    <RouterLink v-if="showLink" to="/settings" class="act">{{ t('common.openSettings') }}</RouterLink>
+    <button v-if="isConflict" type="button" class="msg msg-btn" @click="showConflicts = true">{{ notice.text }}</button>
+    <p v-else class="msg">{{ notice.text }}</p>
+    <button v-if="isConflict" type="button" class="act" @click="showConflicts = true">{{ t('banner.review') }}</button>
+    <RouterLink v-else-if="showLink" to="/settings" class="act">{{ t('common.openSettings') }}</RouterLink>
     <button v-if="notice.tone !== 'danger'" type="button" class="x" :aria-label="t('common.dismiss')" @click="dismiss">
       <Icon name="close" :size="18" />
     </button>
   </div>
+  <ConflictDialog v-if="showConflicts" @close="showConflicts = false" />
 </template>
 
 <style scoped>
@@ -52,7 +59,8 @@ onBeforeUnmount(() => document.documentElement.classList.remove('banner-on'))
 .banner.soft { background: var(--surface); color: var(--ink-2); }
 .lead { align-self: flex-start; margin-top: 1px; }
 .msg { flex: 1; min-width: 0; font-weight: 500; }
-.act { flex: none; min-height: 44px; min-width: 44px; margin: -10px 0; padding: 0 4px; display: inline-flex; align-items: center; font-weight: 600; color: inherit; text-decoration: underline; white-space: nowrap; }
+.msg-btn { border: 0; background: none; padding: 0; text-align: left; color: inherit; font: inherit; font-weight: 500; }
+.act { flex: none; border: 0; background: none; font-size: inherit; min-height: 44px; min-width: 44px; margin: -10px 0; padding: 0 4px; display: inline-flex; align-items: center; font-weight: 600; color: inherit; text-decoration: underline; white-space: nowrap; }
 .x {
   flex: none; width: 44px; height: 44px; margin: -12px -8px -12px 0;
   display: grid; place-items: center; border: 0; background: transparent; color: inherit; border-radius: 10px;
