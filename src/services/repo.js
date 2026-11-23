@@ -6,6 +6,7 @@ import { matchCompany, normalizeCompany } from '../lib/normalize.js'
 import { newCardId, newCompanyId, newPlaceholderId } from '../lib/ids.js'
 import { blobToB64 } from '../lib/b64.js'
 import { rankFor } from '../lib/rank.js'
+import { withDeptAlias } from '../lib/orgView.js'
 
 const imgPath = (id, side) => `images/${id}-${side}.jpg`
 const cardPath = id => `cards/${id}.json`
@@ -261,8 +262,15 @@ export function createRepo({ db, sync, gemini, now = () => new Date().toISOStrin
   const removePlaceholder = (companyId, phId) =>
     editCompany(companyId, co => ({ ...co, placeholders: (co.placeholders || []).filter(p => p.id !== phId) }))
   const setDeptAlias = (companyId, from, to) =>
-    editCompany(companyId, co => ({ ...co, deptAliases: { ...(co.deptAliases || {}), [from]: to } }))
-  const renameCompany = (companyId, name) => editCompany(companyId, co => ({ ...co, name }))
+    editCompany(companyId, co => ({ ...co, deptAliases: withDeptAlias(co.deptAliases, from, to) }))
+  // the old name stays an alias, so cards printed with it still match this company
+  const renameCompany = (companyId, name) => editCompany(companyId, co => {
+    const n = String(name ?? '').trim()
+    if (!n) throw new Error('empty company name')
+    const aliases = co.aliases || []
+    const keep = co.name && co.name !== n && !aliases.includes(co.name) ? [...aliases, co.name] : aliases
+    return { ...co, name: n, aliases: keep.filter(a => a !== n) }
+  })
 
   return {
     ocrState, idle, dispose, clearOcrError, createCard, runOcr, reread, processPending, createCompany, updateCard, deleteCard, assignCompany,

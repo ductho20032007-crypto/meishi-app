@@ -207,7 +207,9 @@ describe('company helpers', () => {
     const c = await db.companies.get(co.id)
     expect(c.deptAliases).toEqual({ '第1営業部': '第一営業部' })
     expect(c.name).toBe('ABC')
+    expect(c.aliases).toContain(co.name)
     expect(paths(sync).filter(p => p === `companies/${co.id}.json`)).toHaveLength(2)
+    await expect(repo.renameCompany(co.id, '  ')).rejects.toThrow()
   })
   it('parallel addPlaceholder keeps both (read-modify-write is atomic)', async () => {
     const { repo, db, co } = await withCompany()
