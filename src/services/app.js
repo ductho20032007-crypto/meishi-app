@@ -9,7 +9,7 @@ import { createRepo } from './repo.js'
 let app = null
 export function getApp() {
   if (!app) {
-    if (!hasKeys()) throw new Error('no_keys')
+    if (!hasKeys()) throw Object.assign(new Error('no_keys'), { kind: 'no_keys' })
     const cfg = getConfig()
     const gh = createGitHub({ token: cfg.gh, repo: cfg.repo })
     const gemini = createGemini({ key: cfg.gk, model: cfg.model })

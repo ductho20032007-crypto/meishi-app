@@ -59,6 +59,7 @@ export function createRepo({ db, sync, gemini, now = () => new Date().toISOStrin
     setState({ queued: state.queued.filter(x => x !== id) })
     if (disposed || paused) return
     const card = await db.cards.get(id)
+    if (disposed) return
     if (!card || card.status !== 'pending') return
     const ctl = new AbortController()
     controllers.set(id, ctl)

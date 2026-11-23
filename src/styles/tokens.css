@@ -1,0 +1,32 @@
+/* Design tokens (from the design canvas). Light theme only in v1. */
+:root {
+  --bg: #F4F5F7;
+  --surface: #FFFFFF;
+  --ink: #16181D;
+  --ink-2: #3B414C;
+  --muted: #5B6270;
+  --faint: #9AA0AC;
+  --line: #E3E5EA;
+  --line-2: #D6D9E0;
+  --seg-bg: #E6E8EC;
+  --accent: #2F5BD3;
+  --accent-ink: #1E3F9E;
+  --accent-soft: #E8EEFB;
+  --warn-bg: #FFF3D6;
+  --warn-line: #F0D28A;
+  --warn-ink: #7A4F00;
+  --ok: #1F7A4D;
+  --ok-ink: #1F6B45;
+  --danger: #B3261E;
+  --danger-bg: #FDECEA;
+  --danger-line: #F2B8B5;
+  --radius: 12px;
+  --radius-card: 16px;
+  --font: Inter, 'Noto Sans JP', system-ui, sans-serif;
+  --nav-h: 64px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  color-scheme: light;
+}
