@@ -333,6 +333,7 @@ function leave() {
 .seg input { border: 0; background: transparent; min-width: 3em; max-width: 60vw; font-size: 14px; padding: 0; height: 34px; font-family: 'Noto Sans JP', var(--font); }
 .seg input:focus { outline: none; }
 .seg:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.segx.hit::before { width: 100%; }   /* grow the target vertically only: never over the level input */
 .segx { width: 34px; height: 34px; border: 0; background: none; color: var(--muted); display: grid; place-items: center; }
 .dashed { height: 36px; padding: 0 12px; border-radius: 10px; border: 1px dashed var(--faint); background: transparent; font-size: 13px; font-weight: 500; color: var(--ink-2); }
 .line { display: flex; gap: 8px; align-items: center; }

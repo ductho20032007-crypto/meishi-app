@@ -49,11 +49,16 @@ const items = computed(() => (rows.value || []).map(c => {
 
 const busy = reactive({})
 const error = ref('')
+const note = ref('')
 const resolved = ref(false)
 async function resolve(path, keep) {
-  busy[path] = keep; error.value = ''
+  busy[path] = keep; error.value = ''; note.value = ''
   try { await getApp().sync.resolve(path, keep) }
-  catch (e) { error.value = t('conflict.failed', { reason: t(errorKey(e?.kind)) }) }
+  catch (e) {
+    // e.saved: the choice is stored here, only the upload failed (it stays queued)
+    if (e?.saved) note.value = t('conflict.savedLater')
+    else error.value = t('conflict.failed', { reason: t(errorKey(e?.kind)) })
+  }
   finally { delete busy[path] }
 }
 watch(rows, (now, before) => { if (before?.length && !now?.length) resolved.value = true })
@@ -68,6 +73,7 @@ watch(rows, (now, before) => { if (before?.length && !now?.length) resolved.valu
     <div class="body">
       <p v-if="resolved && !items.length" class="done" role="status"><Icon name="check" :size="18" />{{ t('conflict.allDone') }}</p>
       <p v-else class="hint">{{ t('conflict.intro') }}</p>
+      <p v-if="note" class="saved" role="status"><Icon name="check" :size="16" />{{ note }}</p>
       <p v-if="error" class="err" role="alert"><Icon name="alert" :size="16" />{{ error }}</p>
 
       <section v-for="it in items" :key="it.path" class="item">
@@ -108,6 +114,7 @@ watch(rows, (now, before) => { if (before?.length && !now?.length) resolved.valu
 .x { width: 44px; height: 44px; border: 0; background: none; display: grid; place-items: center; border-radius: 10px; color: var(--ink); }
 .body { overflow: auto; padding: 14px 16px calc(20px + var(--safe-bottom)); display: flex; flex-direction: column; gap: 12px; }
 .done { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--ok-ink); }
+.saved { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--ok-ink); }
 .err { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--danger); }
 .item { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .it-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }

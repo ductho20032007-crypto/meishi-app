@@ -112,7 +112,7 @@ export function createSync({ db, gh }) {
       }
     }
   }
-  const tables = () => [db.cards, db.companies, db.images, db.files, db.outbox]
+  const tables = () => [db.cards, db.companies, db.images, db.files, db.outbox, db.conflicts]
   async function _pull() {
     let tree
     try { tree = await gh.getTree() } catch (e) { throw repoMissing(e) }
@@ -149,6 +149,9 @@ export function createSync({ db, gh }) {
       const t = tableOf(f.path)
       const done = await db.transaction('rw', tables(), async () => {
         if (await pendingNow(f.path)) return false
+        // images of a card in conflict stay (local blob + files row): "keep mine" may re-upload them
+        const cid = cardIdOfImage(f.path)
+        if (cid && await db.conflicts.get(`cards/${cid}.json`)) return false
         if (t) await db[t].delete(idOf(f.path)); else await db.images.delete(f.path)
         await db.files.delete(f.path)
         return true
@@ -164,7 +167,18 @@ export function createSync({ db, gh }) {
   //                this device's other edits make it differ from the cloud); a remote deletion deletes here too;
   //                a locally deleted record is restored and its held image deletes are dropped.
   async function _resolve(path, keep) {
-    const c = await db.conflicts.get(path); if (!c) return
+    const push = await db.transaction('rw', tables(), () => resolveLocally(path, keep))
+    if (!push) return
+    // the resolution is saved; a failed upload stays queued (status banner reports sync errors)
+    try { await _push() }
+    catch (e) {
+      if (FATAL.has(e?.kind)) throw Object.assign(e, { saved: true })
+      console.warn('resolve: push failed', e?.kind || e)
+    }
+  }
+  // all Dexie writes of a resolution, in one transaction; returns whether a push should follow
+  async function resolveLocally(path, keep) {
+    const c = await db.conflicts.get(path); if (!c) return false
     const t = tableOf(path), id = idOf(path)
     const both = !!(c.local && c.remote)
     let push = true
@@ -205,7 +219,7 @@ export function createSync({ db, gh }) {
       await db.outbox.where('path').equals(path).modify({ state: 'ready' })
     }
     await db.conflicts.delete(path)
-    if (push) await _push()
+    return push
   }
   // the card was deleted remotely (with its images): queue the images this device still has; fix hasBack
   async function reuploadImages(id) {

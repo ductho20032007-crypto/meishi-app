@@ -277,6 +277,7 @@
     "company": "Công ty",
     "failed": "Không xử lý được: {reason}",
     "allDone": "Đã xử lý hết xung đột.",
-    "image": "(ảnh)"
+    "image": "(ảnh)",
+    "savedLater": "Đã lưu — sẽ đồng bộ khi có kết nối."
   }
 }

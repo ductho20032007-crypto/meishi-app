@@ -155,4 +155,46 @@ describe('keep mine on a remotely deleted card re-uploads its images', () => {
     expect(gh.files.has('images/a-front.jpg')).toBe(true)
     expect(await db.outbox.count()).toBe(0)
   })
+  it('a pull after the *deleted conflict keeps the images; keep mine re-uploads both, hasBack kept', async () => {
+    // card + both images created here and synced (files rows exist); another card keeps the remote tree non-empty
+    seed(gh, 'cards/z.json', { id: 'z', name: 'Z' }, 'xz')
+    await db.cards.put({ ...BASE, hasBack: true })
+    await db.images.bulkPut([{ path: 'images/a-front.jpg', blob: blob() }, { path: 'images/a-back.jpg', blob: blob() }])
+    for (const p of ['cards/a.json', 'images/a-front.jpg', 'images/a-back.jpg']) await sync.enqueue(p)
+    await sync.push()
+    expect(await db.files.count()).toBe(3)
+    // the other device deletes the card and its images
+    for (const p of ['cards/a.json', 'images/a-front.jpg', 'images/a-back.jpg']) gh.files.delete(p)
+    await db.cards.update('a', { memo: 'mine' }); await sync.enqueue('cards/a.json')
+    await sync.syncAll()   // push -> *deleted conflict, then pull
+    expect((await db.conflicts.get('cards/a.json')).fields).toEqual(['*deleted'])
+    expect(await db.images.count()).toBe(2)
+    expect(await db.files.get('images/a-front.jpg')).toBeTruthy()
+    await sync.resolve('cards/a.json', 'local')
+    expect(remoteJson(gh, 'cards/a.json')).toMatchObject({ memo: 'mine', hasBack: true })
+    expect(gh.files.has('images/a-front.jpg')).toBe(true)
+    expect(gh.files.has('images/a-back.jpg')).toBe(true)
+    expect(await db.outbox.count()).toBe(0)
+  })
+})
+
+describe('resolve robustness', () => {
+  it('a non-fatal push failure after resolving keeps the resolution and does not reject', async () => {
+    await nameConflict()
+    const put = gh.putFile
+    gh.putFile = async () => { throw new GitHubError('other', 413, 'too big') }
+    await expect(sync.resolve('cards/a.json', 'local')).resolves.toBeUndefined()
+    expect(await db.conflicts.count()).toBe(0)
+    expect((await db.outbox.toArray())[0]).toMatchObject({ path: 'cards/a.json', state: 'error' })
+    gh.putFile = put
+    await sync.push()
+    expect(remoteJson(gh, 'cards/a.json')).toMatchObject({ name: 'L', title: 'T2' })
+  })
+  it('a fatal push failure propagates with saved: true; the resolution is kept', async () => {
+    await nameConflict()
+    gh.putFile = async () => { throw new GitHubError('network', 0, 'offline') }
+    await expect(sync.resolve('cards/a.json', 'local')).rejects.toMatchObject({ kind: 'network', saved: true })
+    expect(await db.conflicts.count()).toBe(0)
+    expect(await db.cards.get('a')).toMatchObject({ name: 'L', title: 'T2' })
+  })
 })

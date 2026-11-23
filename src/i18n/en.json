@@ -277,6 +277,7 @@
     "company": "Company",
     "failed": "Couldn't resolve: {reason}",
     "allDone": "All conflicts resolved.",
-    "image": "(image)"
+    "image": "(image)",
+    "savedLater": "Saved — it will sync when the connection is back."
   }
 }
