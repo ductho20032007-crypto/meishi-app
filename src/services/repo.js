@@ -6,6 +6,7 @@ import { matchCompany, normalizeCompany } from '../lib/normalize.js'
 import { newCardId, newCompanyId, newPlaceholderId } from '../lib/ids.js'
 import { blobToB64 } from '../lib/b64.js'
 import { rankFor } from '../lib/rank.js'
+import { resetAiFields } from '../lib/aiFields.js'
 
 const imgPath = (id, side) => `images/${id}-${side}.jpg`
 const cardPath = id => `cards/${id}.json`
@@ -110,6 +111,28 @@ export function createRepo({ db, sync, gemini, now = () => new Date().toISOStrin
 
   function clearOcrError() { paused = false; setState({ error: null }) }
 
+  // "Read again": a done card goes back to pending with its still-unedited OCR values emptied (fields the user
+  // edited are kept); then it is queued. Also lifts a fatal pause.
+  async function reread(id) {
+    clearOcrError()
+    const ok = await tx(async () => {
+      const c = await db.cards.get(id)
+      if (!c) return false
+      const patch = c.status === 'done' ? resetAiFields(c) : {}
+      if (patch.companyRaw === '' && c.companyId) {
+        // drop the company only when it was the one derived from the OCR text (not a manual choice)
+        const co = await db.companies.get(c.companyId)
+        if (!co || matchCompany(c.companyRaw, [co])) patch.companyId = null
+      }
+      await db.cards.put({ ...c, ...patch, status: 'pending', ocrError: null, updatedAt: now() })
+      await sync.enqueue(cardPath(id))
+      return true
+    })
+    if (!ok) return
+    push()
+    return runOcr(id)
+  }
+
   function dispose() {
     disposed = true
     controllers.forEach(c => c.abort())
@@ -192,6 +215,22 @@ export function createRepo({ db, sync, gemini, now = () => new Date().toISOStrin
     return { ...card, companyId: co.id }
   }
 
+  // Company chosen by name in the edit form: reuses a matching company, else creates one. Returns its id.
+  async function createCompany(name) {
+    const raw = String(name ?? '').trim()
+    if (!normalizeCompany(raw)) throw new Error('empty company name')
+    const id = await tx(async () => {
+      const hit = matchCompany(raw, await db.companies.toArray())
+      if (hit) return hit.id
+      const co = { id: newCompanyId(), name: raw, aliases: [], deptAliases: {}, placeholders: [], updatedAt: now() }
+      await db.companies.put(co)
+      await sync.enqueue(companyPath(co.id))
+      return co.id
+    })
+    push()
+    return id
+  }
+
   async function editCompany(companyId, fn) {
     const next = await tx(async () => {
       const co = await db.companies.get(companyId)
@@ -219,7 +258,7 @@ export function createRepo({ db, sync, gemini, now = () => new Date().toISOStrin
   const renameCompany = (companyId, name) => editCompany(companyId, co => ({ ...co, name }))
 
   return {
-    ocrState, idle, dispose, clearOcrError, createCard, runOcr, processPending, updateCard, deleteCard, assignCompany,
+    ocrState, idle, dispose, clearOcrError, createCard, runOcr, reread, processPending, createCompany, updateCard, deleteCard, assignCompany,
     addPlaceholder, updatePlaceholder, removePlaceholder, setDeptAlias, renameCompany
   }
 }
