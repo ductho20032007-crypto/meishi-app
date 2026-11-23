@@ -22,6 +22,7 @@ const error = ref('')
 const note = ref('')
 const input = ref(null)
 let target = 'front'
+let alive = true
 
 function openCamera(side) {
   target = side
@@ -34,10 +35,12 @@ async function setSide(side, file, rotate) {
   preparing.value = true; error.value = ''; note.value = ''
   try {
     const blob = await prepareImage(file, { rotate })
+    if (!alive) return   // left the page while the image was being prepared
     release(sides[side])
     sides[side] = { file, rotate, blob, url: URL.createObjectURL(blob) }
     current.value = side
   } catch (e) {
+    if (!alive) return
     error.value = e?.kind === 'unsupported_image' ? t('capture.unsupported') : t('capture.failed')
   } finally { preparing.value = false }
 }
@@ -73,6 +76,7 @@ function commitTag() {
 // ---- save ----
 const saving = ref(false)
 async function save(next) {
+  if (saving.value) return
   if (!sides.front) { openCamera('front'); return }
   if (adding.value) commitTag()
   saving.value = true; error.value = ''; note.value = ''
@@ -85,8 +89,7 @@ async function save(next) {
     if (!next) { clearImages(); router.replace(`/card/${id}`); return }
     // next card: usually the same event, so place / date / tags are kept
     clearImages(); form.memo = ''; current.value = 'front'
-    note.value = t('capture.saved')
-    openCamera('front')
+    note.value = t('capture.saved')   // the big "take photo" tile is shown again (no auto-open after an await)
   } catch (e) {
     console.warn('createCard', e)
     error.value = e?.kind === 'unsupported_image' ? t('capture.unsupported') : t('capture.failed')
@@ -100,7 +103,7 @@ function back() {
 }
 
 onMounted(() => openCamera('front'))
-onBeforeUnmount(clearImages)
+onBeforeUnmount(() => { alive = false; clearImages() })
 </script>
 
 <template>
@@ -121,9 +124,9 @@ onBeforeUnmount(clearImages)
       <template v-else>
         <img :src="shown.url" :alt="current === 'back' ? t('capture.backSide') : t('capture.front')" class="photo">
         <div class="tools">
-          <button type="button" class="tool" :disabled="preparing" @click="rotate"><Icon name="rotate" :size="18" />{{ t('capture.rotate') }}</button>
-          <button type="button" class="tool" :disabled="preparing" @click="openCamera(current)"><Icon name="camera" :size="18" />{{ t('capture.retake') }}</button>
-          <button v-if="current === 'back'" type="button" class="tool" @click="removeBack"><Icon name="trash" :size="18" />{{ t('capture.removeBack') }}</button>
+          <button type="button" class="tool hit" :disabled="preparing" @click="rotate"><Icon name="rotate" :size="18" />{{ t('capture.rotate') }}</button>
+          <button type="button" class="tool hit" :disabled="preparing" @click="openCamera(current)"><Icon name="camera" :size="18" />{{ t('capture.retake') }}</button>
+          <button v-if="current === 'back'" type="button" class="tool hit" @click="removeBack"><Icon name="trash" :size="18" />{{ t('capture.removeBack') }}</button>
         </div>
       </template>
     </section>
@@ -154,11 +157,11 @@ onBeforeUnmount(clearImages)
       <div class="f">
         <span class="lbl" id="cap-tags">{{ t('capture.tags') }}</span>
         <div class="tags" role="group" aria-labelledby="cap-tags">
-          <button v-for="tag in tagChoices" :key="tag" type="button" class="tag" :class="{ on: form.tags.includes(tag) }"
+          <button v-for="tag in tagChoices" :key="tag" type="button" class="tag hit" :class="{ on: form.tags.includes(tag) }"
             :aria-pressed="form.tags.includes(tag)" @click="toggleTag(tag)">#{{ tag }}</button>
           <input v-if="adding" ref="tagInput" v-model="newTag" class="tag-inp" :placeholder="t('capture.newTagPh')" :aria-label="t('capture.newTagPh')"
             enterkeyhint="done" @keydown.enter.prevent="commitTag" @blur="commitTag">
-          <button v-else type="button" class="tag new" @click="startTag">{{ t('capture.newTag') }}</button>
+          <button v-else type="button" class="tag new hit" @click="startTag">{{ t('capture.newTag') }}</button>
         </div>
       </div>
       <label class="f"><span class="lbl">{{ t('capture.memo') }}</span>

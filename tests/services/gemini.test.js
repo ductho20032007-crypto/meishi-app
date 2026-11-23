@@ -44,6 +44,14 @@ describe('gemini', () => {
     expect(m.ocrSnapshot).toMatchObject({ name: 'N', title: '課長', rank: 5 })
     expect(m.ocrSnapshot.memo).toBeUndefined()
   })
+  it('mergeOcr on a re-read replaces values still equal to the previous OCR, keeps edits, drops rereadFrom', () => {
+    const prev = { name: 'Old', title: '課長', rank: 5, emails: ['a@x'], phones: [] }
+    const c = { id: '1', status: 'pending', name: 'Old', title: '部長', rank: 4, emails: ['a@x'], phones: [], address: '', rereadFrom: prev }
+    const m = mergeOcr(c, { name: 'New', title: '係長', rank: 6, emails: ['b@x'], phones: [], address: 'Tokyo' })
+    expect(m).toMatchObject({ name: 'New', title: '部長', rank: 4, emails: ['b@x'], address: 'Tokyo', status: 'done' })
+    expect('rereadFrom' in m).toBe(false)
+    expect(m.ocrSnapshot.title).toBe('係長')
+  })
 })
 
 describe('gemini error classes', () => {

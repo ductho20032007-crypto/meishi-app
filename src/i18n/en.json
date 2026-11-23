@@ -135,7 +135,8 @@
       "mobile": "Mobile",
       "office": "Office",
       "fax": "Fax"
-    }
+    },
+    "companyName": "Company name"
   },
   "list": {
     "title": "Cards",
@@ -275,6 +276,7 @@
     "card": "Card",
     "company": "Company",
     "failed": "Couldn't resolve: {reason}",
-    "allDone": "All conflicts resolved."
+    "allDone": "All conflicts resolved.",
+    "image": "(image)"
   }
 }

@@ -212,10 +212,10 @@ function leave() {
               <Icon v-if="i > 0" name="chevron" :size="16" class="segsep" />
               <span class="seg" :class="{ ocr: ai('deptPath') }">
                 <input :ref="el => { segInputs[i] = el }" v-model="form.deptPath[i]" :style="{ width: segWidth(s) }" :aria-label="t('edit.levelLabel', { n: i + 1 })" autocomplete="off">
-                <button type="button" class="segx" :aria-label="t('edit.removeLevel', { name: s || i + 1 })" @click="removeLevel(i)"><Icon name="close" :size="14" /></button>
+                <button type="button" class="segx hit" :aria-label="t('edit.removeLevel', { name: s || i + 1 })" @click="removeLevel(i)"><Icon name="close" :size="14" /></button>
               </span>
             </template>
-            <button type="button" class="dashed" @click="addLevel">{{ t('edit.addLevel') }}</button>
+            <button type="button" class="dashed hit" @click="addLevel">{{ t('edit.addLevel') }}</button>
           </div>
         </div>
 
@@ -253,18 +253,18 @@ function leave() {
             <Icon name="chevronDown" :size="16" class="caret" />
           </span>
           <input v-model="p.value" class="inp" :class="{ ocr: aiPhone(p) }" type="tel" :aria-label="t(`field.phoneType.${p.type}`)" autocomplete="off">
-          <button type="button" class="x" :aria-label="t('common.remove')" @click="form.phones.splice(i, 1)"><Icon name="close" :size="18" /></button>
+          <button type="button" class="x hit" :aria-label="t('common.remove')" @click="form.phones.splice(i, 1)"><Icon name="close" :size="18" /></button>
         </div>
-        <button type="button" class="add" @click="form.phones.push({ type: 'mobile', value: '' })">{{ t('edit.addPhone') }}</button>
+        <button type="button" class="add hit" @click="form.phones.push({ type: 'mobile', value: '' })">{{ t('edit.addPhone') }}</button>
 
         <div v-for="(e, i) in form.emails" :key="'e' + i" class="f">
           <span v-if="i === 0" class="lbl">{{ t('field.emails') }}<span v-if="form.emails.some(aiEmail)" class="ai">{{ t('edit.aiBadge') }}</span></span>
           <div class="line">
             <input v-model="form.emails[i]" class="inp" :class="{ ocr: aiEmail(e) }" type="email" :aria-label="t('field.emails')" autocomplete="off">
-            <button type="button" class="x" :aria-label="t('common.remove')" @click="form.emails.splice(i, 1)"><Icon name="close" :size="18" /></button>
+            <button type="button" class="x hit" :aria-label="t('common.remove')" @click="form.emails.splice(i, 1)"><Icon name="close" :size="18" /></button>
           </div>
         </div>
-        <button type="button" class="add" @click="form.emails.push('')">{{ t('edit.addEmail') }}</button>
+        <button type="button" class="add hit" @click="form.emails.push('')">{{ t('edit.addEmail') }}</button>
 
         <label class="f"><span class="lbl">{{ t('field.address') }}<span v-if="ai('address')" class="ai">{{ t('edit.aiBadge') }}</span></span>
           <input v-model="form.address" class="inp" :class="{ ocr: ai('address') }" autocomplete="off"></label>
@@ -279,11 +279,11 @@ function leave() {
         <div class="f">
           <span class="lbl" id="edit-tags">{{ t('field.tags') }}</span>
           <div class="tags" role="group" aria-labelledby="edit-tags">
-            <button v-for="tag in tagChoices" :key="tag" type="button" class="tag" :class="{ on: form.tags.includes(tag) }"
+            <button v-for="tag in tagChoices" :key="tag" type="button" class="tag hit" :class="{ on: form.tags.includes(tag) }"
               :aria-pressed="form.tags.includes(tag)" @click="toggleTag(tag)">#{{ tag }}</button>
             <input v-if="addingTag" ref="tagInput" v-model="newTag" class="tag-inp" :placeholder="t('capture.newTagPh')" :aria-label="t('capture.newTagPh')"
               enterkeyhint="done" @keydown.enter.prevent="commitTag" @blur="commitTag">
-            <button v-else type="button" class="tag new" @click="startTag">{{ t('capture.newTag') }}</button>
+            <button v-else type="button" class="tag new hit" @click="startTag">{{ t('capture.newTag') }}</button>
           </div>
         </div>
         <label class="f"><span class="lbl">{{ t('field.memo') }}</span><textarea v-model="form.memo" rows="4" class="inp area" /></label>
@@ -333,13 +333,13 @@ function leave() {
 .seg input { border: 0; background: transparent; min-width: 3em; max-width: 60vw; font-size: 14px; padding: 0; height: 34px; font-family: 'Noto Sans JP', var(--font); }
 .seg input:focus { outline: none; }
 .seg:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
-.segx { width: 30px; height: 34px; border: 0; background: none; color: var(--muted); display: grid; place-items: center; }
+.segx { width: 34px; height: 34px; border: 0; background: none; color: var(--muted); display: grid; place-items: center; }
 .dashed { height: 36px; padding: 0 12px; border-radius: 10px; border: 1px dashed var(--faint); background: transparent; font-size: 13px; font-weight: 500; color: var(--ink-2); }
 .line { display: flex; gap: 8px; align-items: center; }
 .line .inp { flex: 1; min-width: 0; }
 .type { width: 132px; flex: none; }
 .type select { padding-right: 30px; }
-.x { width: 40px; height: 44px; flex: none; border: 0; background: none; color: var(--muted); display: grid; place-items: center; border-radius: 10px; }
+.x { width: 44px; height: 44px; flex: none; border: 0; background: none; color: var(--muted); display: grid; place-items: center; border-radius: 10px; }
 .add { align-self: flex-start; min-height: 40px; padding: 0 4px; border: 0; background: none; font-size: 14px; font-weight: 600; color: var(--accent); margin-top: -6px; }
 .tags { display: flex; flex-wrap: wrap; gap: 8px; }
 .tag { height: 36px; padding: 0 14px; border-radius: 18px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink-2); font-size: 13px; font-weight: 500; }

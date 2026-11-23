@@ -135,7 +135,8 @@
       "mobile": "Di động",
       "office": "Văn phòng",
       "fax": "Fax"
-    }
+    },
+    "companyName": "Tên công ty"
   },
   "list": {
     "title": "Danh thiếp",
@@ -275,6 +276,7 @@
     "card": "Danh thiếp",
     "company": "Công ty",
     "failed": "Không xử lý được: {reason}",
-    "allDone": "Đã xử lý hết xung đột."
+    "allDone": "Đã xử lý hết xung đột.",
+    "image": "(ảnh)"
   }
 }

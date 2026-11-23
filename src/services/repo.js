@@ -6,7 +6,6 @@ import { matchCompany, normalizeCompany } from '../lib/normalize.js'
 import { newCardId, newCompanyId, newPlaceholderId } from '../lib/ids.js'
 import { blobToB64 } from '../lib/b64.js'
 import { rankFor } from '../lib/rank.js'
-import { resetAiFields } from '../lib/aiFields.js'
 
 const imgPath = (id, side) => `images/${id}-${side}.jpg`
 const cardPath = id => `cards/${id}.json`
@@ -71,11 +70,15 @@ export function createRepo({ db, sync, gemini, now = () => new Date().toISOStrin
       const cur = await db.cards.get(id)
       if (ctl.signal.aborted || !cur) return
       // resolve the company first (own transaction), then finalise the card atomically against a fresh read
-      const companyId = cur.companyId || (await assignCompany(mergeOcr(cur, ocr))).companyId
+      const m = mergeOcr(cur, ocr)
+      const reassign = await ocrCompanyChanged(cur, m)
+      const companyId = cur.companyId && !reassign ? cur.companyId : (await assignCompany({ ...m, companyId: null })).companyId
       const saved = await tx(async () => {
         const c2 = await db.cards.get(id)
         if (!c2 || ctl.signal.aborted || c2.status !== 'pending') return false
-        await db.cards.put({ ...mergeOcr(c2, ocr), companyId: c2.companyId || companyId || null, updatedAt: now() })
+        // a company the user picked meanwhile wins
+        const co = c2.companyId !== cur.companyId ? (c2.companyId || companyId) : companyId
+        await db.cards.put({ ...mergeOcr(c2, ocr), companyId: co || null, updatedAt: now() })
         await sync.enqueue(cardPath(id))
         return true
       })
@@ -111,26 +114,30 @@ export function createRepo({ db, sync, gemini, now = () => new Date().toISOStrin
 
   function clearOcrError() { paused = false; setState({ error: null }) }
 
-  // "Read again": a done card goes back to pending with its still-unedited OCR values emptied (fields the user
-  // edited are kept); then it is queued. Also lifts a fatal pause.
+  // "Read again": the card goes back to pending with ALL its data; rereadFrom = the previous OCR result, so the
+  // new result replaces only values still equal to it (see mergeOcr). A failed read leaves the card untouched.
   async function reread(id) {
     clearOcrError()
     const ok = await tx(async () => {
       const c = await db.cards.get(id)
       if (!c) return false
-      const patch = c.status === 'done' ? resetAiFields(c) : {}
-      if (patch.companyRaw === '' && c.companyId) {
-        // drop the company only when it was the one derived from the OCR text (not a manual choice)
-        const co = await db.companies.get(c.companyId)
-        if (!co || matchCompany(c.companyRaw, [co])) patch.companyId = null
-      }
-      await db.cards.put({ ...c, ...patch, status: 'pending', ocrError: null, updatedAt: now() })
+      const from = c.status === 'done' ? (c.ocrBy === 'gemini' ? c.ocrSnapshot : null) : c.rereadFrom
+      const n = { ...c, status: 'pending', ocrError: null, updatedAt: now() }
+      if (from) n.rereadFrom = from; else delete n.rereadFrom
+      await db.cards.put(n)
       await sync.enqueue(cardPath(id))
       return true
     })
     if (!ok) return
     push()
     return runOcr(id)
+  }
+  // re-read changed the OCR'd company text and the card's company was derived from the old text -> re-assign
+  async function ocrCompanyChanged(cur, merged) {
+    const prev = cur.rereadFrom?.companyRaw
+    if (!cur.companyId || !prev || normalizeCompany(merged.companyRaw) === normalizeCompany(cur.companyRaw)) return false
+    const co = await db.companies.get(cur.companyId)
+    return !co || !!matchCompany(prev, [co])
   }
 
   function dispose() {

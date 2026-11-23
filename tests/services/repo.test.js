@@ -362,26 +362,53 @@ describe('createCompany', () => {
 })
 
 describe('reread', () => {
-  it('empties untouched OCR fields, keeps edits, re-runs OCR', async () => {
+  it('keeps all data while pending, then replaces still-AI fields and keeps edits', async () => {
     const { repo, db, gemini } = setup()
     const id = await repo.createCard({ front: blob(), memo: 'm' })
     await repo.runOcr(id)
     const co = (await db.cards.get(id)).companyId
     await repo.updateCard(id, { title: '部長' })
-    gemini.extract.mockResolvedValueOnce({ ...OCR, name: '山田 太郎2', title: '係長', deptPath: ['総務部'] })
-    await repo.reread(id)
+    const g = gate()
+    gemini.extract.mockImplementationOnce(async () => { await g.p; return { ...OCR, name: '山田 太郎2', title: '係長', deptPath: ['総務部'] } })
+    const p = repo.reread(id)
+    await tick(20)
+    const mid = await db.cards.get(id)
+    expect(mid).toMatchObject({ status: 'pending', ocrError: null, name: '山田 太郎', title: '部長', deptPath: ['営業本部'], companyId: co })
+    expect(mid.rereadFrom).toMatchObject({ name: '山田 太郎', title: '課長' })
+    g.open(); await p
     const c = await db.cards.get(id)
     expect(c).toMatchObject({ status: 'done', name: '山田 太郎2', title: '部長', rank: 4, deptPath: ['総務部'], memo: 'm', companyId: co })
     expect(c.ocrSnapshot.title).toBe('係長')
+    expect('rereadFrom' in c).toBe(false)
   })
-  it('keeps a manually chosen company', async () => {
-    const { repo, db } = setup()
+  it('a failed re-read keeps every field', async () => {
+    const { repo, db, gemini } = setup()
     const id = await repo.createCard({ front: blob() })
     await repo.runOcr(id)
-    const other = await repo.createCompany('XYZ')
-    await repo.updateCard(id, { companyId: other })
+    const before = await db.cards.get(id)
+    gemini.extract.mockRejectedValueOnce(err('quota'))
     await repo.reread(id)
-    expect((await db.cards.get(id)).companyId).toBe(other)
+    const c = await db.cards.get(id)
+    expect(c).toMatchObject({ status: 'pending', ocrError: 'quota', name: before.name, title: before.title, deptPath: before.deptPath, companyId: before.companyId })
+  })
+  it('keeps a manually chosen company; re-assigns one derived from a changed OCR company', async () => {
+    const { repo, db, gemini } = setup()
+    const a = await repo.createCard({ front: blob() })
+    await repo.runOcr(a)
+    const other = await repo.createCompany('XYZ')
+    await repo.updateCard(a, { companyId: other })
+    gemini.extract.mockResolvedValueOnce({ ...OCR, companyRaw: '株式会社DEF' })
+    await repo.reread(a)
+    expect((await db.cards.get(a)).companyId).toBe(other)
+    const b = await repo.createCard({ front: blob() })
+    await repo.runOcr(b)
+    const abc = (await db.cards.get(b)).companyId
+    gemini.extract.mockResolvedValueOnce({ ...OCR, companyRaw: '株式会社GHI' })
+    await repo.reread(b)
+    const cb = await db.cards.get(b)
+    expect(cb.companyRaw).toBe('株式会社GHI')
+    expect(cb.companyId).not.toBe(abc)
+    expect((await db.companies.get(cb.companyId)).name).toBe('株式会社GHI')
   })
   it('lifts a fatal pause and retries a pending card', async () => {
     const { repo, db, gemini } = setup()

@@ -26,7 +26,8 @@ export function filterCards(cards, { q = '', chip = 'all', companyName = () => '
     if (tag !== null && !(c.tags || []).includes(tag)) return false
     if (!words.length) return true
     const text = cardSearchText(c, companyName(c))
-    return words.every(w => text.includes(w))
+    const compact = text.replace(/ /g, '')   // "山田太郎" finds "山田 太郎"
+    return words.every(w => text.includes(w) || compact.includes(w))
   })
 }
 

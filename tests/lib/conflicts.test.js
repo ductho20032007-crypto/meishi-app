@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest'
-import { conflictFields, formatValue } from '../../src/lib/conflicts.js'
+import { conflictFields, formatValue, fieldKey } from '../../src/lib/conflicts.js'
 
 it('conflictFields: field list, remote / local deletion', () => {
   const local = { name: 'A' }, remote = { name: 'B' }
@@ -22,4 +22,16 @@ it('formatValue renders each field kind', () => {
   expect(formatValue('thumb', 'data:image/jpeg;base64,xx', o)).toBe('[image]')
   expect(formatValue('memo', 'x'.repeat(300), o)).toHaveLength(160)
   expect(formatValue('ocrSnapshot', { a: 1 }, o)).toBe('{"a":1}')
+})
+
+it('hides internal fields, labels and formats ids / rank / aliases', () => {
+  expect(conflictFields({ fields: ['name', 'ocrSnapshot', 'thumb', 'status', 'rereadFrom'], local: {}, remote: {} }).fields).toEqual(['name'])
+  expect(fieldKey('companyId')).toBe('field.company')
+  expect(fieldKey('name', true)).toBe('field.companyName')
+  expect(fieldKey('memo')).toBe('field.memo')
+  const o = { personName: id => (id === 'p1' ? '佐藤' : id), rankLabel: n => `${n} · Section` }
+  expect(formatValue('reportsTo', 'p1', o)).toBe('佐藤')
+  expect(formatValue('rank', 5, o)).toBe('5 · Section')
+  expect(formatValue('deptAliases', { '第1営業部': '第一営業部' }, o)).toBe('第1営業部 → 第一営業部')
+  expect(formatValue('thumb', 'data:image/jpeg;base64,x', { image: '(ảnh)' })).toBe('(ảnh)')
 })

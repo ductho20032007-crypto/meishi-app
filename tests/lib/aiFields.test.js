@@ -1,5 +1,5 @@
 import { it, expect, describe } from 'vitest'
-import { aiFilled, aiItem, aiCompany, resetAiFields, diffPatch, sameValue, isEmptyValue } from '../../src/lib/aiFields.js'
+import { aiFilled, aiItem, aiCompany, diffPatch, sameValue, isEmptyValue } from '../../src/lib/aiFields.js'
 
 const snap = { name: '山田 太郎', nameKana: '', nameLatin: '', companyRaw: '株式会社ABC商事', deptPath: ['営業本部', '第一営業部'], title: '課長', rank: 5,
   phones: [{ type: 'mobile', value: '090-1' }, { type: 'office', value: '03-1' }], emails: ['a@x.jp'], address: '東京', website: '' }
@@ -45,12 +45,6 @@ describe('aiFilled', () => {
     expect(aiCompany(card, { name: 'XYZ', aliases: [] })).toBe(false)
     expect(aiCompany(card, null)).toBe(false)
   })
-})
-
-it('resetAiFields empties only untouched OCR values', () => {
-  const edited = { ...card, title: '部長', phones: [{ type: 'mobile', value: '080-9' }] }
-  expect(resetAiFields(edited)).toEqual({ name: '', companyRaw: '', deptPath: [], rank: null, emails: [], address: '' })
-  expect(resetAiFields({ ...card, ocrBy: null })).toEqual({})
 })
 
 it('diffPatch returns only changed fields', () => {

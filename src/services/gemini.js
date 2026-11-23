@@ -1,5 +1,6 @@
 // src/services/gemini.js
 import { matchTitle } from '../lib/rank.js'
+import { sameValue } from '../lib/values.js'
 export class GeminiError extends Error { constructor(kind, status, message) { super(message); this.kind = kind; this.status = status } }
 const STR = { type: 'STRING' }
 export const OCR_SCHEMA = {
@@ -134,13 +135,16 @@ export function sanitizeOcr(o) {
     emails: arr(o.emails).map(s).filter(Boolean), address: s(o.address), website: s(o.website)
   }
 }
-const OCR_FIELDS = ['name', 'nameKana', 'nameLatin', 'companyRaw', 'deptPath', 'title', 'rank', 'phones', 'emails', 'address', 'website']
+export const OCR_FIELDS = ['name', 'nameKana', 'nameLatin', 'companyRaw', 'deptPath', 'title', 'rank', 'phones', 'emails', 'address', 'website']
 const empty = v => v == null || v === '' || (Array.isArray(v) && v.length === 0)
 // Pending cards must be created with `rank: null` (not 7) so the OCR rank can fill it.
 // ocrSnapshot keeps the raw OCR output for later "AI-filled" badges.
+// On a re-read (card.rereadFrom = the previous ocrSnapshot) a field that still holds the previous OCR value is
+// replaced too; fields the user edited are kept. rereadFrom is removed.
 export function mergeOcr(card, ocr) {
-  const out = { ...card }
-  for (const f of OCR_FIELDS) if (empty(card[f]) && !empty(ocr[f])) out[f] = ocr[f]
+  const { rereadFrom, ...out } = card
+  const stale = f => rereadFrom && typeof rereadFrom === 'object' && !empty(rereadFrom[f]) && sameValue(card[f], rereadFrom[f])
+  for (const f of OCR_FIELDS) if ((empty(card[f]) || stale(f)) && !empty(ocr[f])) out[f] = ocr[f]
   const ocrSnapshot = Object.fromEntries(OCR_FIELDS.map(f => [f, ocr[f]]))
   return { ...out, status: 'done', ocrBy: 'gemini', ocrError: null, ocrSnapshot }
 }

@@ -2,13 +2,20 @@
 // Conflict policy: JSON records (cards/companies) use a 3-way merge against the last synced base;
 // images are last-writer-wins (a local image overwrites the remote one).
 import { utf8ToB64, b64ToUtf8, blobToB64, b64ToBlob } from '../lib/b64.js'
-import { merge3 } from '../lib/merge.js'
+import { mergeRecords } from '../lib/merge.js'
 
 const tableOf = path => path.startsWith('cards/') ? 'cards' : path.startsWith('companies/') ? 'companies' : null
 const idOf = path => path.split('/').pop().replace(/\.json$/, '')
 const APP_PATH = /^(?:(?:cards|companies)\/[^/]+\.json|images\/[^/]+)$/
 // abort the whole run (items stay as they are); everything else is per-item
 const FATAL = new Set(['network', 'auth', 'ratelimit', 'server', 'repomissing'])
+// images/<cardId>-front.jpg -> cards/<cardId>.json
+const IMG = /^images\/(.+)-(?:front|back)\.jpg$/
+const cardIdOfImage = path => IMG.exec(path)?.[1] ?? null
+const imagePaths = id => [`images/${id}-front.jpg`, `images/${id}-back.jpg`]
+// order-independent JSON (for "is this the same record" checks)
+const stable = v => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(key => [key, x[key]])) : x))
+const sameRecord = (a, b) => { const strip = r => ({ ...r, updatedAt: undefined }); return stable(strip(a)) === stable(strip(b)) }
 const repoMissing = e => e?.kind === 'notfound' ? Object.assign(new Error('repository not found'), { kind: 'repomissing', status: 404 }) : e
 
 export function createSync({ db, gh }) {
@@ -65,8 +72,9 @@ export function createSync({ db, gh }) {
     }
     const remoteRec = JSON.parse(b64ToUtf8(remote.content))
     if (!localRec) return markConflict(item, { local: null, remote: remoteRec, remoteSha: remote.sha, fields: ['*deleted-local'] })
-    const { merged, conflicts } = merge3((await db.files.get(path))?.base ?? null, localRec, remoteRec)
-    if (conflicts.length) return markConflict(item, { local: localRec, remote: remoteRec, remoteSha: remote.sha, fields: conflicts })
+    const { merged, conflicts } = mergeRecords((await db.files.get(path))?.base ?? null, localRec, remoteRec)
+    // `merged` = both sides' non-conflicting edits (conflicting fields hold the local value)
+    if (conflicts.length) return markConflict(item, { local: localRec, remote: remoteRec, remoteSha: remote.sha, fields: conflicts, merged })
     await db[t].put(merged)
     await db.files.put({ path, sha: remote.sha, base: remoteRec })
     await pushOne(item); return 'done'
@@ -81,10 +89,22 @@ export function createSync({ db, gh }) {
     }
     await db.outbox.delete(item.seq)
   }
+  // An image delete waits while its card's own outbox item (queued before it) is unprocessed or in conflict:
+  // if the user restores the card ("keep cloud"), its images must still be there.
+  async function held(item) {
+    if (item.op !== 'delete') return false
+    const id = cardIdOfImage(item.path)
+    if (!id) return false
+    const cp = `cards/${id}.json`
+    if (await db.conflicts.get(cp)) return true
+    const card = await db.outbox.where('path').equals(cp).first()
+    return !!card && card.seq < item.seq
+  }
   async function _push() {
     const items = await db.outbox.orderBy('seq').filter(i => i.state !== 'conflict').toArray()   // 'error' items are retried every run
     if (items.length) { try { await gh.ping() } catch (e) { throw repoMissing(e) } }   // repo-wide 404 must not be read per-file
     for (const item of items) {
+      if (await held(item)) continue
       try { await attempt(item) }
       catch (e) {
         if (FATAL.has(e?.kind)) throw e
@@ -137,20 +157,66 @@ export function createSync({ db, gh }) {
     }
     return { updated, deleted }
   }
+  // keep 'local' : the merged record (conflicting fields = this device) is pushed over the cloud version;
+  //                a remotely deleted card is recreated together with the images still on this device;
+  //                a locally deleted record is deleted remotely (its images follow).
+  // keep 'remote': the merged record with the cloud's values for the conflicting fields (pushed only when
+  //                this device's other edits make it differ from the cloud); a remote deletion deletes here too;
+  //                a locally deleted record is restored and its held image deletes are dropped.
   async function _resolve(path, keep) {
     const c = await db.conflicts.get(path); if (!c) return
-    const t = tableOf(path)
+    const t = tableOf(path), id = idOf(path)
+    const both = !!(c.local && c.remote)
+    let push = true
     if (keep === 'remote') {
-      if (c.remote) { await db[t].put(c.remote); await db.files.put({ path, sha: c.remoteSha, base: c.remote }) }
-      else { await db[t].delete(idOf(path)); await db.files.delete(path) }
-      await db.outbox.where('path').equals(path).delete()
-      await db.conflicts.delete(path)
-      return
+      if (!c.remote) {
+        await db[t].delete(id); await db.files.delete(path)
+        await db.outbox.where('path').equals(path).delete()
+        if (t === 'cards') {
+          await db.images.bulkDelete(imagePaths(id))
+          await db.outbox.where('path').anyOf(imagePaths(id)).delete()
+        }
+        push = false
+      } else if (both) {
+        const result = { ...(c.merged || c.local) }
+        for (const f of c.fields || []) { if (f in c.remote) result[f] = c.remote[f]; else delete result[f] }
+        const same = sameRecord(result, c.remote)
+        await db[t].put(same ? c.remote : result)
+        await db.files.put({ path, sha: c.remoteSha, base: c.remote })
+        if (same) { await db.outbox.where('path').equals(path).delete(); push = false }
+        else await db.outbox.where('path').equals(path).modify({ state: 'ready', op: 'put' })
+      } else {
+        await db[t].put(c.remote)
+        await db.files.put({ path, sha: c.remoteSha, base: c.remote })
+        await db.outbox.where('path').equals(path).delete()
+        if (t === 'cards') await db.outbox.where('path').anyOf(imagePaths(id)).filter(i => i.op === 'delete').delete()
+        push = false
+      }
+    } else {
+      if (both) {
+        await db[t].put(c.merged || c.local)
+        await db.files.put({ path, sha: c.remoteSha, base: c.remote })
+      } else if (c.local) {
+        await db.files.delete(path)
+        if (t === 'cards') await reuploadImages(id)
+      } else {
+        await db.files.put({ path, sha: c.remoteSha, base: c.remote })
+      }
+      await db.outbox.where('path').equals(path).modify({ state: 'ready' })
     }
-    if (c.remoteSha) await db.files.put({ path, sha: c.remoteSha, base: c.remote }); else await db.files.delete(path)
-    await db.outbox.where('path').equals(path).modify({ state: 'ready' })
     await db.conflicts.delete(path)
-    await _push()
+    if (push) await _push()
+  }
+  // the card was deleted remotely (with its images): queue the images this device still has; fix hasBack
+  async function reuploadImages(id) {
+    const [front, back] = imagePaths(id)
+    for (const p of [front, back]) {
+      if (!(await db.images.get(p))) continue
+      await db.files.delete(p)
+      await enqueue(p)
+    }
+    const card = await db.cards.get(id)
+    if (card?.hasBack && !(await db.images.get(back))) await db.cards.put({ ...card, hasBack: false })
   }
   async function getImage(path) {
     const hit = await db.images.get(path); if (hit) return hit.blob

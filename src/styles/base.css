@@ -49,3 +49,9 @@ h1, h2, h3, p { margin: 0; }
 .btn.accent { background: var(--accent); border-color: var(--accent); color: #FFFFFF; }
 .btn.danger { color: var(--danger); border-color: var(--danger-line); }
 .hint { font-size: 12px; color: var(--muted); line-height: 1.45; }
+/* expands a small control's touch target to at least 44×44 without changing its look */
+.hit { position: relative; }
+.hit::before {
+  content: ''; position: absolute; left: 50%; top: 50%;
+  width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%);
+}

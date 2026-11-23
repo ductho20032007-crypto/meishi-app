@@ -1,6 +1,6 @@
 <script setup>
 // ③ Card detail — image (front/back, zoom), identity, actions, contact rows with copy, notes, re-read / delete.
-import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
@@ -47,12 +47,15 @@ async function loadImage() {
 }
 watch(() => [card.value?.id, side.value, card.value?.hasBack], loadImage, { immediate: true })
 onBeforeUnmount(() => { seq++; setUrl(null) })
-const zoom = ref(false)
+// fullscreen image: a modal <dialog> (focus trap, Esc closes natively)
+const zoomDlg = ref(null)
 const zoomBig = ref(false)
-const openZoom = () => { if (imgUrl.value) { zoom.value = true; zoomBig.value = false } }
-const onKey = e => { if (e.key === 'Escape') zoom.value = false }
-onMounted(() => window.addEventListener('keydown', onKey))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+function openZoom() {
+  if (!imgUrl.value || !zoomDlg.value) return
+  zoomBig.value = false
+  try { zoomDlg.value.showModal() } catch { zoomDlg.value.setAttribute('open', '') }
+}
+const closeZoom = () => { try { zoomDlg.value?.close() } catch { zoomDlg.value?.removeAttribute('open') } }
 
 // ---- identity ----
 const subName = computed(() => [card.value?.nameKana, card.value?.nameLatin].filter(Boolean).join(' · '))
@@ -116,7 +119,9 @@ const pendingTitle = computed(() => running.value ? t('detail.reading') : queued
 const ocrErr = computed(() => (pending.value && card.value?.ocrError && !running.value) ? t('detail.ocrError', { reason: t(errorKey(card.value.ocrError)) }) : '')
 function reread() {
   if (!pending.value && !window.confirm(t('detail.rereadConfirm'))) return
-  getApp().repo.reread(props.id).catch(e => console.warn('reread', e?.kind || e))
+  let p
+  try { p = getApp().repo.reread(props.id) } catch (e) { showToast(t(errorKey(e?.kind))); return }
+  Promise.resolve(p).catch(e => { console.warn('reread', e?.kind || e); showToast(t(errorKey(e?.kind))) })
 }
 
 // ---- delete / navigation ----
@@ -125,6 +130,7 @@ async function remove() {
   if (!window.confirm(t('detail.deleteConfirm'))) return
   deleting.value = true
   try { await getApp().repo.deleteCard(props.id); router.replace('/') }
+  catch (e) { console.warn('deleteCard', e); showToast(t(errorKey(e?.kind))) }
   finally { deleting.value = false }
 }
 function back() {
@@ -152,8 +158,8 @@ function back() {
           <span v-if="imgState === 'missing'" class="img-note">{{ t('detail.imageUnavailable') }}</span>
         </button>
         <div v-if="card.hasBack" class="seg" role="group" :aria-label="t('detail.sides')">
-          <button type="button" :class="{ on: side === 'front' }" :aria-pressed="side === 'front'" @click="side = 'front'">{{ t('capture.front') }}</button>
-          <button type="button" :class="{ on: side === 'back' }" :aria-pressed="side === 'back'" @click="side = 'back'">{{ t('capture.backSide') }}</button>
+          <button type="button" class="hit" :class="{ on: side === 'front' }" :aria-pressed="side === 'front'" @click="side = 'front'">{{ t('capture.front') }}</button>
+          <button type="button" class="hit" :class="{ on: side === 'back' }" :aria-pressed="side === 'back'" @click="side = 'back'">{{ t('capture.backSide') }}</button>
         </div>
       </section>
 
@@ -164,7 +170,7 @@ function back() {
           <span>{{ t('detail.pendingHint') }}</span>
           <span v-if="ocrErr" class="p-err">{{ ocrErr }}</span>
         </div>
-        <button v-if="!running" type="button" class="btn p-btn" @click="reread">{{ t('detail.reread') }}</button>
+        <button v-if="!running" type="button" class="btn p-btn hit" @click="reread">{{ t('detail.reread') }}</button>
       </section>
 
       <section class="who">
@@ -173,7 +179,7 @@ function back() {
         <RouterLink v-if="orgLink && companyName" :to="orgLink" class="co">{{ companyName }}</RouterLink>
         <span v-else-if="companyName" class="co plain">{{ companyName }}</span>
         <span v-if="dept" class="dept">{{ dept }}</span>
-        <RouterLink v-if="card.title" :to="{ path: '/titles', query: { q: card.title } }" class="title-chip">
+        <RouterLink v-if="card.title" :to="{ path: '/titles', query: { q: card.title } }" class="title-chip hit">
           <strong>{{ card.title }}</strong><span v-if="titleVi">· {{ titleVi }}</span>
           <Icon name="book" :size="16" />
         </RouterLink>
@@ -235,12 +241,12 @@ function back() {
       </footer>
     </template>
 
-    <div v-if="zoom" class="zoom" role="dialog" aria-modal="true" :aria-label="t('detail.enlarge')" @click.self="zoom = false">
-      <button type="button" class="z-close" :aria-label="t('detail.closeImage')" @click="zoom = false"><Icon name="close" /></button>
-      <div class="z-scroll" @click.self="zoom = false">
-        <img :src="imgUrl" alt="" :class="{ big: zoomBig }" @click="zoomBig = !zoomBig">
+    <dialog ref="zoomDlg" class="zoom" :aria-label="t('detail.enlarge')" @click.self="closeZoom">
+      <button type="button" class="z-close" :aria-label="t('detail.closeImage')" @click="closeZoom"><Icon name="close" /></button>
+      <div class="z-scroll" @click.self="closeZoom">
+        <img v-if="imgUrl" :src="imgUrl" alt="" :class="{ big: zoomBig }" @click="zoomBig = !zoomBig">
       </div>
-    </div>
+    </dialog>
 
     <div v-if="toast" class="toast" role="status">{{ toast }}</div>
   </div>
@@ -317,7 +323,12 @@ a.fv:hover { color: var(--accent); }
 .foot-btns { display: flex; gap: 4px; flex: none; }
 .link { height: 44px; padding: 0 12px; border: 0; background: none; font-size: 13px; font-weight: 600; color: var(--accent); }
 .link.danger { color: var(--danger); }
-.zoom { position: fixed; inset: 0; z-index: 50; background: #0A0C10; display: flex; flex-direction: column; }
+.zoom {
+  position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0;
+  background: #0A0C10; color: #FFFFFF; flex-direction: column;
+}
+.zoom[open] { display: flex; }
+.zoom::backdrop { background: #0A0C10; }
 .z-close {
   position: absolute; top: calc(8px + var(--safe-top)); right: calc(8px + var(--safe-right)); z-index: 1;
   width: 44px; height: 44px; border: 0; border-radius: 22px; background: rgba(255, 255, 255, 0.15); color: #FFFFFF; display: grid; place-items: center;

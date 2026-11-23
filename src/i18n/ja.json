@@ -135,7 +135,8 @@
       "mobile": "携帯",
       "office": "会社",
       "fax": "FAX"
-    }
+    },
+    "companyName": "会社名"
   },
   "list": {
     "title": "名刺",
@@ -275,6 +276,7 @@
     "card": "名刺",
     "company": "会社",
     "failed": "解決できませんでした: {reason}",
-    "allDone": "すべての競合を解決しました。"
+    "allDone": "すべての競合を解決しました。",
+    "image": "（画像）"
   }
 }

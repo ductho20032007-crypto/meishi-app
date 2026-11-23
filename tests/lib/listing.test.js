@@ -27,6 +27,11 @@ describe('filterCards', () => {
     expect(ids(filterCards(cards, { q: 'minh phat', chip: 'tag:đối tác' }))).toEqual(['b'])
     expect(ids(filterCards(cards, { q: 'ＡＢＣ', companyName }))).toEqual(['a', 'd'])
   })
+  it('ignores spaces inside names', () => {
+    expect(ids(filterCards(cards, { q: '山田太郎' }))).toEqual(['a'])
+    expect(ids(filterCards(cards, { q: 'やまだたろう' }))).toEqual(['a'])
+    expect(ids(filterCards(cards, { q: 'nguyenvanan' }))).toEqual(['b'])
+  })
 })
 
 describe('sortCards', () => {

@@ -7,28 +7,40 @@ import { db } from '../services/db.js'
 import { getApp } from '../services/app.js'
 import { useLive } from '../composables/useLive.js'
 import { errorKey } from '../i18n/errors.js'
-import { conflictFields, formatValue } from '../lib/conflicts.js'
+import { conflictFields, formatValue, fieldKey } from '../lib/conflicts.js'
+import { RANK_LABELS } from '../data/titles.js'
 
 const emit = defineEmits(['close'])
-const { t, te } = useI18n()
+const { t, te, locale } = useI18n()
 const rows = useLive(() => db.conflicts.toArray(), null)
 const companies = useLive(() => db.companies.toArray(), [])
+const cards = useLive(() => db.cards.toArray(), [])
 const companyName = id => (companies.value || []).find(c => c.id === id)?.name || id
+// reportsTo points at a card or a placeholder of the same company
+const personName = id => (cards.value || []).find(c => c.id === id)?.name
+  || (companies.value || []).flatMap(c => c.placeholders || []).find(p => p.id === id)?.name || id
 
 const dlg = ref(null)
 onMounted(() => { try { dlg.value?.showModal() } catch { dlg.value?.setAttribute('open', '') } })
-const close = () => { dlg.value?.close?.(); emit('close') }
+// the native close event is the single place that emits (Esc, close button, programmatic close)
+let closed = false
+const onClosed = () => { if (!closed) { closed = true; emit('close') } }
+const close = () => { if (dlg.value?.open && typeof dlg.value.close === 'function') dlg.value.close(); else onClosed() }
 
-const label = f => (te(`field.${f}`) ? t(`field.${f}`) : f)
+const label = (f, isCompany) => { const k = fieldKey(f, isCompany); return te(k) ? t(k) : f }
 const fmt = (f, v) => formatValue(f, v, {
   empty: t('common.empty'),
+  image: t('conflict.image'),
   phoneType: ty => t(`field.phoneType.${['mobile', 'office', 'fax'].includes(ty) ? ty : 'office'}`),
-  companyName
+  rankLabel: n => `${n} · ${RANK_LABELS[n]?.[locale.value] || RANK_LABELS[n]?.en || ''}`,
+  companyName,
+  personName
 })
 const items = computed(() => (rows.value || []).map(c => {
   const rec = c.local || c.remote || {}
   return {
     path: c.path,
+    isCompany: c.path.startsWith('companies/'),
     kind: c.path.startsWith('companies/') ? t('conflict.company') : t('conflict.card'),
     name: rec.name || t('detail.noName'),
     ...conflictFields(c)
@@ -48,7 +60,7 @@ watch(rows, (now, before) => { if (before?.length && !now?.length) resolved.valu
 </script>
 
 <template>
-  <dialog ref="dlg" class="sheet" aria-labelledby="cf-title" @close="emit('close')" @cancel.prevent="close">
+  <dialog ref="dlg" class="sheet" aria-labelledby="cf-title" @close="onClosed">
     <header class="hd">
       <h2 id="cf-title" class="ttl">{{ t('conflict.title') }}</h2>
       <button type="button" class="x" :aria-label="t('common.close')" @click="close"><Icon name="close" /></button>
@@ -64,7 +76,7 @@ watch(rows, (now, before) => { if (before?.length && !now?.length) resolved.valu
         <p v-else-if="it.deleted === 'local'" class="note">{{ t('conflict.deletedLocal') }}</p>
         <dl v-else class="fields">
           <div v-for="f in it.fields" :key="f" class="fld">
-            <dt>{{ label(f) }}</dt>
+            <dt>{{ label(f, it.isCompany) }}</dt>
             <dd>
               <span class="side"><span class="who">{{ t('conflict.thisDevice') }}</span><span class="val">{{ fmt(f, it.local?.[f]) }}</span></span>
               <span class="side"><span class="who">{{ t('conflict.cloudSide') }}</span><span class="val">{{ fmt(f, it.remote?.[f]) }}</span></span>

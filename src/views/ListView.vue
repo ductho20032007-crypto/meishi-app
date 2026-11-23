@@ -97,7 +97,7 @@ const listUi = r({ q: '', chip: 'all', sort: 'newest' })
           <h1 class="h1">{{ t('list.title') }}</h1>
           <span v-if="cards" class="sub">{{ t('list.cards', all.length) }} · {{ t('list.companies', companyCount) }}</span>
         </div>
-        <button type="button" class="sync" :class="syncChip.tone" :aria-label="`${t('list.syncNow')} — ${syncChip.text}`" :disabled="status.syncing" @click="syncNow()">
+        <button type="button" class="sync hit" :class="syncChip.tone" :aria-label="`${t('list.syncNow')} — ${syncChip.text}`" :disabled="status.syncing" @click="syncNow()">
           <Icon :name="syncChip.icon" :size="16" class="sync-ico" :class="{ spinning: status.syncing }" />
           <span>{{ syncChip.text }}</span>
         </button>
@@ -110,13 +110,13 @@ const listUi = r({ q: '', chip: 'all', sort: 'newest' })
       </label>
 
       <div v-if="all.length" class="chips" role="group" :aria-label="t('list.filters')">
-        <button type="button" class="chip" :class="{ on: ui.chip === 'all' }" :aria-pressed="ui.chip === 'all'" @click="ui.chip = 'all'">
+        <button type="button" class="chip hit" :class="{ on: ui.chip === 'all' }" :aria-pressed="ui.chip === 'all'" @click="ui.chip = 'all'">
           {{ t('list.all') }} <span class="n">{{ all.length }}</span>
         </button>
-        <button v-if="pendingCount" type="button" class="chip warn" :class="{ on: ui.chip === 'pending' }" :aria-pressed="ui.chip === 'pending'" @click="ui.chip = ui.chip === 'pending' ? 'all' : 'pending'">
+        <button v-if="pendingCount" type="button" class="chip warn hit" :class="{ on: ui.chip === 'pending' }" :aria-pressed="ui.chip === 'pending'" @click="ui.chip = ui.chip === 'pending' ? 'all' : 'pending'">
           <Icon name="clock" :size="15" />{{ t('list.pending') }} <span class="n">{{ pendingCount }}</span>
         </button>
-        <button v-for="tag in tags" :key="tag" type="button" class="chip" :class="{ on: ui.chip === 'tag:' + tag }" :aria-pressed="ui.chip === 'tag:' + tag"
+        <button v-for="tag in tags" :key="tag" type="button" class="chip hit" :class="{ on: ui.chip === 'tag:' + tag }" :aria-pressed="ui.chip === 'tag:' + tag"
           @click="ui.chip = ui.chip === 'tag:' + tag ? 'all' : 'tag:' + tag">#{{ tag }}</button>
       </div>
     </header>
@@ -215,7 +215,7 @@ const listUi = r({ q: '', chip: 'all', sort: 'newest' })
 .sort { position: relative; display: flex; align-items: center; gap: 4px; color: var(--ink-2); font-weight: 500; }
 .sort select {
   appearance: none; -webkit-appearance: none; border: 0; background: none; font-size: 12px; font-weight: 500; color: var(--ink-2);
-  min-height: 32px; padding: 0 18px 0 8px; margin-right: -18px; position: relative; z-index: 1;
+  min-height: 44px; padding: 0 18px 0 8px; margin: -6px -18px -6px 0; position: relative; z-index: 1;
 }
 .rows { list-style: none; margin: 0; padding: 0; background: var(--surface); border-top: 1px solid #ECEEF2; }
 .row {
