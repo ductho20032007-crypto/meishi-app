@@ -1,9 +1,10 @@
 <script setup>
 // ⑦ Settings — no key inputs (keys only arrive through the setup link, spec §3.5).
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
-import { LOCALES, setLocale } from '../i18n/index.js'
+import LangSegment from '../components/LangSegment.vue'
+import { errorKey } from '../i18n/errors.js'
 import { getConfig, setPref, clearKeys } from '../services/settings.js'
 import { getApp, resetApp } from '../services/app.js'
 import { DEFAULT_MODELS } from '../services/gemini.js'
@@ -13,7 +14,6 @@ import { toVCards } from '../lib/vcard.js'
 import { status, syncNow, resetStatus } from '../stores/status.js'
 
 const { t, locale } = useI18n()
-const LABELS = { ja: '日本語', vi: 'Tiếng Việt', en: 'English' }
 const cfg = getConfig()
 const repoName = cfg.repo || '—'
 
@@ -31,14 +31,14 @@ async function test(name) {
     conn[name] = { state: 'fail', kind: e?.kind || 'other' }
   }
 }
-const ERR_KINDS = ['auth', 'repomissing', 'notfound', 'ratelimit', 'server', 'network', 'region', 'bad_request', 'quota', 'busy', 'timeout']
-const errText = kind => t(`errors.${ERR_KINDS.includes(kind) ? kind : 'other'}`)
+const errText = kind => t(errorKey(kind))
 const stateText = s => t(s === 'ok' ? 'settings.connected' : s === 'fail' ? 'settings.notConnected' : s === 'checking' ? 'settings.checking' : 'settings.unknown')
-// a later background sync / OCR failing for auth-type reasons overrides an earlier successful test
-const ghShown = computed(() => conn.github)
-const gkShown = computed(() => conn.gemini)
-watch(() => status.error, k => { if (k === 'auth' || k === 'repomissing') conn.github = { state: 'fail', kind: k } }, { immediate: true })
-watch(() => status.ocr?.error, k => { if (k) conn.gemini = { state: 'fail', kind: k } }, { immediate: true })
+// While background sync fails for auth / missing repo, the card shows that failure even if a ping succeeded.
+const ghShown = computed(() => (status.error === 'auth' || status.error === 'repomissing')
+  ? { state: 'fail', kind: status.error, pingOk: conn.github.state === 'ok' } : conn.github)
+const gkShown = computed(() => status.ocr?.error ? { state: 'fail', kind: status.ocr.error } : conn.gemini)
+const stateLine = x => x.pingOk ? t('settings.syncFailed', { reason: errText(x.kind) })
+  : x.state === 'fail' ? `${stateText('fail')} · ${errText(x.kind)}` : stateText(x.state)
 
 // ---- model ----
 const model = ref(cfg.model || '')
@@ -47,7 +47,7 @@ function changeModel() {
   setPref('model', model.value || null)
   resetApp()      // the Gemini client is rebuilt with the new model
   resetStatus()
-  syncNow()
+  syncNow({ force: true })
 }
 
 // ---- sync ----
@@ -82,7 +82,8 @@ async function exportAll(kind) {
 // ---- remove keys ----
 const removing = ref(false)
 async function removeKeys() {
-  if (!window.confirm(t('settings.removeConfirm', { n: status.outboxCount }))) return
+  const n = status.outboxCount
+  if (!window.confirm(n ? t('settings.removeConfirm', n) : t('settings.removeConfirmClean'))) return
   removing.value = true
   resetApp()          // disposes the repo (aborts OCR)
   resetStatus()
@@ -100,12 +101,9 @@ onMounted(() => { test('github'); test('gemini') })
   <div class="page settings">
     <h1 class="page-title">{{ t('settings.title') }}</h1>
 
-    <h2 class="sec" id="s-lang">{{ t('settings.lang') }}</h2>
+    <h2 class="sec">{{ t('settings.lang') }}</h2>
     <div class="card">
-      <div class="seg" role="radiogroup" aria-labelledby="s-lang">
-        <button v-for="l in LOCALES" :key="l" type="button" role="radio" class="seg-btn" :class="{ on: locale === l }"
-          :aria-checked="locale === l" :lang="l" @click="setLocale(l)">{{ LABELS[l] }}</button>
-      </div>
+      <LangSegment />
       <span class="hint">{{ t('settings.langHint') }}</span>
     </div>
 
@@ -115,7 +113,7 @@ onMounted(() => { test('github'); test('gemini') })
       <div class="status-row">
         <span class="state" :class="ghShown.state" role="status">
           <span class="dot" aria-hidden="true"><Icon v-if="ghShown.state === 'ok'" name="check" :size="12" /><Icon v-else-if="ghShown.state === 'fail'" name="close" :size="12" /></span>
-          <span>{{ stateText(ghShown.state) }}<template v-if="ghShown.state === 'fail'"> · {{ errText(ghShown.kind) }}</template></span>
+          <span>{{ stateLine(ghShown) }}</span>
         </span>
         <button type="button" class="btn" :disabled="conn.github.state === 'checking'" @click="test('github')">{{ t('settings.test') }}</button>
       </div>
@@ -126,7 +124,7 @@ onMounted(() => { test('github'); test('gemini') })
       <div class="status-row">
         <span class="state" :class="gkShown.state" role="status">
           <span class="dot" aria-hidden="true"><Icon v-if="gkShown.state === 'ok'" name="check" :size="12" /><Icon v-else-if="gkShown.state === 'fail'" name="close" :size="12" /></span>
-          <span>{{ stateText(gkShown.state) }}<template v-if="gkShown.state === 'fail'"> · {{ errText(gkShown.kind) }}</template></span>
+          <span>{{ stateLine(gkShown) }}</span>
         </span>
         <button type="button" class="btn" :disabled="conn.gemini.state === 'checking'" @click="test('gemini')">{{ t('settings.test') }}</button>
       </div>
@@ -177,9 +175,6 @@ onMounted(() => { test('github'); test('gemini') })
 
 <style scoped>
 .settings { padding-bottom: 32px; }
-.seg { display: flex; gap: 4px; padding: 4px; border-radius: 12px; background: var(--seg-bg); }
-.seg-btn { flex: 1; min-width: 0; min-height: 44px; border: 0; border-radius: 9px; background: transparent; color: var(--ink-2); font-size: 14px; font-weight: 500; }
-.seg-btn.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1); }
 .kv { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 14px; min-height: 28px; }
 .kv span:first-child { color: var(--muted); flex: none; }
 .kv span:last-child { min-width: 0; overflow-wrap: anywhere; text-align: right; }

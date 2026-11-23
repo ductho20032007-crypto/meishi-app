@@ -1,24 +1,15 @@
 <script setup>
-import { onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
-import { hasKeys } from '../services/settings.js'
-import { LOCALES, setLocale } from '../i18n/index.js'
+import LangSegment from '../components/LangSegment.vue'
 
-const { t, locale } = useI18n()
-const router = useRouter()
+const { t } = useI18n()
 const logo = import.meta.env.BASE_URL + 'logo.svg'
-const LABELS = { ja: '日本語', vi: 'Tiếng Việt', en: 'English' }
-onMounted(() => { if (hasKeys()) router.replace('/') })
 </script>
 
 <template>
   <div class="page welcome">
-    <div class="lang" role="radiogroup" :aria-label="t('settings.lang')">
-      <button v-for="l in LOCALES" :key="l" type="button" role="radio" :aria-checked="locale === l"
-        :class="{ on: locale === l }" :lang="l" @click="setLocale(l)">{{ LABELS[l] }}</button>
-    </div>
+    <LangSegment compact class="lang" />
 
     <div class="hero">
       <img class="logo" :src="logo" alt="" width="72" height="72" />
@@ -43,9 +34,7 @@ onMounted(() => { if (hasKeys()) router.replace('/') })
 
 <style scoped>
 .welcome { display: flex; flex-direction: column; gap: 16px; }
-.lang { align-self: flex-end; margin: 0 16px; display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: var(--seg-bg); }
-.lang button { min-height: 44px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; color: var(--ink-2); font-size: 13px; font-weight: 500; }
-.lang button.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1); }
+.lang { align-self: flex-end; margin: 0 16px; }
 .hero { padding: 24px 16px 4px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .logo { border-radius: 18px; margin-bottom: 8px; }
 .brand { font-size: 13px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent); }

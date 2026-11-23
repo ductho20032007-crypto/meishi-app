@@ -15,4 +15,9 @@ const routes = [
 ]
 export const router = createRouter({ history: createWebHashHistory(), routes })
 const OPEN = ['/setup', '/titles', '/welcome']
-router.beforeEach(to => (!hasKeys() && !OPEN.includes(to.path)) ? '/welcome' : true)
+router.beforeEach(to => {
+  const keyed = hasKeys()
+  if (!keyed && !OPEN.includes(to.path)) return '/welcome'
+  if (keyed && to.path === '/welcome') return '/'
+  return true
+})

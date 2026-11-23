@@ -1,21 +1,24 @@
 <script setup>
 import { computed, onMounted, onBeforeUnmount } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import BottomNav from './components/BottomNav.vue'
 import Banner from './components/Banner.vue'
 import { hasKeys } from './services/settings.js'
-import { startStatus, syncNow } from './stores/status.js'
+import { startStatus, stopStatus, syncNow } from './stores/status.js'
 
 const route = useRoute()
+const router = useRouter()
 // bottom nav only on the 4 tab routes, and only once the device is set up
 // (hasKeys() reads localStorage, so re-evaluate on every navigation)
 const keyed = computed(() => { void route.fullPath; return hasKeys() })
 const showNav = computed(() => route.meta.nav === true && keyed.value)
 
-const run = () => { if (hasKeys()) syncNow() }
+// never sync from #/setup: the setup view swaps the keys and starts its own run
+const run = () => { if (hasKeys() && route.path !== '/setup') syncNow() }
 const onVisible = () => { if (document.visibilityState === 'visible') run() }
-onMounted(() => {
+onMounted(async () => {
   startStatus()
+  await router.isReady()
   run()
   window.addEventListener('online', run)
   document.addEventListener('visibilitychange', onVisible)
@@ -23,6 +26,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('online', run)
   document.removeEventListener('visibilitychange', onVisible)
+  stopStatus()
 })
 </script>
 

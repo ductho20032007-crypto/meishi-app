@@ -1,7 +1,20 @@
 {
-  "app": { "name": "Meishi" },
-  "nav": { "label": "Main navigation", "cards": "Cards", "companies": "Companies", "titles": "Titles", "settings": "Settings" },
-  "common": { "close": "Close", "dismiss": "Dismiss", "retry": "Try again", "openSettings": "Settings" },
+  "app": {
+    "name": "Meishi"
+  },
+  "nav": {
+    "label": "Main navigation",
+    "cards": "Cards",
+    "companies": "Companies",
+    "titles": "Titles",
+    "settings": "Settings"
+  },
+  "common": {
+    "close": "Close",
+    "dismiss": "Dismiss",
+    "retry": "Try again",
+    "openSettings": "Settings"
+  },
   "banner": {
     "auth": "Can't sync — the key has expired or lost access. Scan the setup QR again.",
     "repomissing": "Can't sync — the data repository was not found or the key has no access. Scan the setup QR again.",
@@ -10,7 +23,7 @@
     "network": "No connection. Changes are kept on this device and sent when you're back online.",
     "offline": "Offline — changes are saved on this device.",
     "other": "Sync failed. It will retry later.",
-    "conflicts": "{n} item(s) were also changed on another device — review needed.",
+    "conflicts": "1 item was also changed on another device — review needed. | {n} items were also changed on another device — review needed.",
     "ocrAuth": "The Gemini key is invalid or expired — cards can't be read. Scan the setup QR again.",
     "ocrRegion": "Gemini is not available in your current region — cards can't be read.",
     "ocrBadRequest": "Gemini rejected the request — cards can't be read right now."
@@ -80,8 +93,10 @@
     "device": "This device",
     "removeKeys": "Remove keys from this device",
     "removeHint": "Deletes the keys and all local data on this device. Data already synced stays in your GitHub repository.",
-    "removeConfirm": "Remove the keys and all local data from this device? Changes not yet synced ({n}) will be lost.",
+    "removeConfirm": "Remove the keys and all local data from this device? 1 change not yet synced will be lost. | Remove the keys and all local data from this device? {n} changes not yet synced will be lost.",
     "titlesLink": "Title dictionary",
-    "titlesHint": "Japanese job titles with Vietnamese and English equivalents"
+    "titlesHint": "Japanese job titles with Vietnamese and English equivalents",
+    "removeConfirmClean": "Remove the keys and all local data from this device? Everything is already synced.",
+    "syncFailed": "Connection test passed, but sync failed: {reason}"
   }
 }

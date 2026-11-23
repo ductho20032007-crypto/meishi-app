@@ -1,7 +1,20 @@
 {
-  "app": { "name": "Meishi" },
-  "nav": { "label": "Điều hướng chính", "cards": "Danh thiếp", "companies": "Công ty", "titles": "Từ điển", "settings": "Cài đặt" },
-  "common": { "close": "Đóng", "dismiss": "Ẩn", "retry": "Thử lại", "openSettings": "Cài đặt" },
+  "app": {
+    "name": "Meishi"
+  },
+  "nav": {
+    "label": "Điều hướng chính",
+    "cards": "Danh thiếp",
+    "companies": "Công ty",
+    "titles": "Từ điển",
+    "settings": "Cài đặt"
+  },
+  "common": {
+    "close": "Đóng",
+    "dismiss": "Ẩn",
+    "retry": "Thử lại",
+    "openSettings": "Cài đặt"
+  },
   "banner": {
     "auth": "Không đồng bộ được — key hết hạn hoặc mất quyền, hãy quét lại QR cài đặt.",
     "repomissing": "Không đồng bộ được — không tìm thấy repo dữ liệu hoặc key không có quyền, hãy quét lại QR cài đặt.",
@@ -10,7 +23,7 @@
     "network": "Không có kết nối. Thay đổi được giữ trên máy và sẽ gửi khi có mạng.",
     "offline": "Đang offline — thay đổi được lưu trên máy này.",
     "other": "Đồng bộ thất bại. Sẽ thử lại sau.",
-    "conflicts": "{n} mục cũng bị sửa trên thiết bị khác — cần xem lại.",
+    "conflicts": "1 mục cũng bị sửa trên thiết bị khác — cần xem lại. | {n} mục cũng bị sửa trên thiết bị khác — cần xem lại.",
     "ocrAuth": "Key Gemini sai hoặc hết hạn — không đọc được danh thiếp. Hãy quét lại QR cài đặt.",
     "ocrRegion": "Gemini không hỗ trợ khu vực hiện tại — không đọc được danh thiếp.",
     "ocrBadRequest": "Gemini từ chối yêu cầu — tạm thời không đọc được danh thiếp."
@@ -80,8 +93,10 @@
     "device": "Thiết bị này",
     "removeKeys": "Xóa key khỏi máy này",
     "removeHint": "Xóa key và toàn bộ dữ liệu trên máy này. Dữ liệu đã đồng bộ vẫn còn trong repo GitHub.",
-    "removeConfirm": "Xóa key và toàn bộ dữ liệu trên máy này? {n} thay đổi chưa đồng bộ sẽ bị mất.",
+    "removeConfirm": "Xóa key và toàn bộ dữ liệu trên máy này? 1 thay đổi chưa đồng bộ sẽ bị mất. | Xóa key và toàn bộ dữ liệu trên máy này? {n} thay đổi chưa đồng bộ sẽ bị mất.",
     "titlesLink": "Từ điển chức danh",
-    "titlesHint": "Chức danh tiếng Nhật kèm nghĩa tiếng Việt và tiếng Anh"
+    "titlesHint": "Chức danh tiếng Nhật kèm nghĩa tiếng Việt và tiếng Anh",
+    "removeConfirmClean": "Xóa key và toàn bộ dữ liệu trên máy này? Mọi thay đổi đã được đồng bộ.",
+    "syncFailed": "Kiểm tra kết nối thành công nhưng đồng bộ thất bại: {reason}"
   }
 }

@@ -7,23 +7,31 @@ import Icon from '../components/Icon.vue'
 import { decodeSetup } from '../lib/setupLink.js'
 import { createGitHub } from '../services/github.js'
 import { createGemini } from '../services/gemini.js'
-import { getConfig, saveKeys } from '../services/settings.js'
+import { getConfig, saveKeys, hasKeys } from '../services/settings.js'
 import { resetApp } from '../services/app.js'
 import { db } from '../services/db.js'
-import { resetStatus, syncNow } from '../stores/status.js'
+import { errorKey } from '../i18n/errors.js'
+import { resetStatus, syncNow, waitIdle } from '../stores/status.js'
 
 const props = defineProps({ c: { type: String, default: '' } })
 const { t } = useI18n()
 const logo = import.meta.env.BASE_URL + 'logo.svg'
 const router = useRouter()
 
-const phase = ref('checking')   // checking | invalid | failed
+const phase = ref('idle')   // idle | checking | invalid | failed
 const checks = reactive({ github: { state: 'pending', kind: null }, gemini: { state: 'pending', kind: null } })
 let cfg = null
+let gen = 0                 // a newer setup link supersedes a run still in flight
 
-// The payload holds real keys: drop it from the address bar / history entry right away (kept in memory only).
-function scrubUrl() {
-  try { history.replaceState(history.state, '', location.pathname + location.search + '#/setup') } catch { /* ignore */ }
+// The payload holds real keys. Synchronously rewrite the current history entry (URL + vue-router state),
+// then let the router replace its own location, so the payload survives nowhere (address bar, history.state,
+// router.currentRoute). The decoded keys stay in memory only.
+function scrub() {
+  try {
+    const st = history.state || {}
+    history.replaceState({ ...st, current: '/setup', back: st.back ?? null, forward: null }, '', location.pathname + location.search + '#/setup')
+  } catch { /* ignore */ }
+  return router.replace({ path: '/setup' }).catch(() => {})
 }
 
 async function check(name, fn) {
@@ -33,33 +41,44 @@ async function check(name, fn) {
 }
 
 async function run() {
+  const my = ++gen
+  const next = cfg
   phase.value = 'checking'
   const [okGh, okGk] = await Promise.all([
-    check('github', () => createGitHub({ token: cfg.gh, repo: cfg.repo }).ping()),
-    check('gemini', () => createGemini({ key: cfg.gk }).ping())
+    check('github', () => createGitHub({ token: next.gh, repo: next.repo }).ping()),
+    check('gemini', () => createGemini({ key: next.gk }).ping())
   ])
+  if (my !== gen) return
   if (!okGh || !okGk) { phase.value = 'failed'; return }
-  // a different data repo than before: local data belongs to the old one, start clean
+  // let a background sync of the old keys finish before swapping keys / clearing tables
+  await waitIdle()
+  if (my !== gen) return
   const prev = getConfig().repo
   resetApp()
-  resetStatus()
-  if (prev && prev !== cfg.repo) {
+  if (prev && prev !== next.repo) {
+    // a different data repo than before: local data belongs to the old one, start clean
     await db.transaction('rw', db.tables, () => Promise.all(db.tables.map(tb => tb.clear()))).catch(() => {})
   }
-  saveKeys(cfg)
+  saveKeys(next)
   cfg = null
+  resetStatus()                 // binds status.ocr to the new repo
   await router.replace('/')
-  syncNow()
+  syncNow({ force: true })      // a NEW run with the new keys, even if an old one was still finishing
 }
 
-// watch (not onMounted): opening a second setup link while already on #/setup reuses this component
-watch(() => props.c, c => {
-  if (!c) return      // our own scrub below; the router still holds the old query
-  scrubUrl()
-  try { cfg = decodeSetup(c) } catch { cfg = null; phase.value = 'invalid'; return }
+function start(c) {
+  scrub()
+  try { cfg = decodeSetup(c) } catch { cfg = null; gen++; phase.value = 'invalid'; return }
   run()
+}
+
+// watch (not onMounted): opening a second setup link while already on #/setup reuses this component.
+// An empty c is either our own scrub (ignored) or a bare #/setup visit (nothing to do here: leave).
+watch(() => props.c, c => {
+  if (c) start(c)
+  else if (phase.value === 'idle') router.replace(hasKeys() ? '/' : '/welcome')
 }, { immediate: true })
-const errText = kind => t(`errors.${['auth', 'repomissing', 'notfound', 'ratelimit', 'server', 'network', 'region', 'bad_request', 'quota', 'busy', 'timeout'].includes(kind) ? kind : 'other'}`)
+const errText = kind => t(errorKey(kind))
 </script>
 
 <template>
@@ -71,7 +90,7 @@ const errText = kind => t(`errors.${['auth', 'repomissing', 'notfound', 'ratelim
       <p class="row"><Icon name="alert" :size="20" /><span>{{ t('setup.invalid') }}</span></p>
     </div>
 
-    <template v-else>
+    <template v-else-if="phase !== 'idle'">
       <p v-if="phase === 'checking'" class="lead" role="status">{{ t('setup.checking') }}</p>
       <p v-else class="lead fail" role="alert">{{ t('setup.failed') }}</p>
       <ul class="card checks">
@@ -91,8 +110,8 @@ const errText = kind => t(`errors.${['auth', 'repomissing', 'notfound', 'ratelim
       </div>
     </template>
 
-    <div v-if="phase !== 'checking'" class="actions">
-      <RouterLink to="/welcome" class="btn">{{ t('setup.back') }}</RouterLink>
+    <div v-if="phase === 'invalid' || phase === 'failed'" class="actions">
+      <RouterLink to="/welcome" replace class="btn">{{ t('setup.back') }}</RouterLink>
     </div>
     <p class="hint warn">{{ t('setup.warn') }}</p>
   </div>

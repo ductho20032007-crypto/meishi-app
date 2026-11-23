@@ -17,7 +17,6 @@ export const status = reactive({
 })
 
 const SYNC_KINDS = new Set(['auth', 'repomissing', 'ratelimit', 'server', 'network'])
-let started = false
 let boundRepo = null
 let unbindOcr = null
 let running = null
@@ -40,10 +39,12 @@ function unbind() {
 }
 
 // Starts the live counters once (outbox, conflicts, pending OCR, last sync time).
+let sub = null
+const setOnline = () => { status.online = true }
+const setOffline = () => { status.online = false }
 export function startStatus() {
-  if (started) return
-  started = true
-  liveQuery(async () => ({
+  if (sub) return
+  sub = liveQuery(async () => ({
     outbox: await db.outbox.count(),
     conflicts: await db.conflicts.count(),
     pending: await db.cards.where('status').equals('pending').count(),
@@ -56,40 +57,63 @@ export function startStatus() {
     error: e => console.error('status liveQuery', e)
   })
   if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => { status.online = true })
-    window.addEventListener('offline', () => { status.online = false })
+    window.addEventListener('online', setOnline)
+    window.addEventListener('offline', setOffline)
   }
 }
-
-// Push + pull, then queue OCR for pending cards. Single-flight; never throws.
-export function syncNow({ ocr = true } = {}) {
-  if (running) return running
-  running = (async () => {
-    let app
-    try { app = bindApp() } catch { app = null }
-    if (!app) return
-    status.syncing = true
-    try {
-      await app.sync.syncAll()
-      status.error = null
-      const at = new Date().toISOString()
-      status.lastSyncAt = at
-      await db.meta.put({ key: 'lastSyncAt', value: at }).catch(() => {})
-    } catch (e) {
-      status.error = SYNC_KINDS.has(e?.kind) ? e.kind : 'other'
-      console.warn('sync failed', e?.kind || e)
-    } finally {
-      status.syncing = false
-    }
-    // OCR runs in the background (serial queue in repo); fatal errors surface through status.ocr.error
-    if (ocr) Promise.resolve().then(() => app.repo.processPending()).catch(e => console.warn('processPending', e))
-  })().finally(() => { running = null })
-  return running
+export function stopStatus() {
+  sub?.unsubscribe(); sub = null
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('online', setOnline)
+    window.removeEventListener('offline', setOffline)
+  }
+  unbind()
 }
 
-// Called after keys were removed / replaced.
+async function runOnce(ocr) {
+  let app
+  try { app = bindApp() } catch { app = null }
+  if (!app) return
+  status.syncing = true
+  try {
+    await app.sync.syncAll()
+    status.error = null
+    const at = new Date().toISOString()
+    status.lastSyncAt = at
+    await db.meta.put({ key: 'lastSyncAt', value: at }).catch(() => {})
+  } catch (e) {
+    status.error = SYNC_KINDS.has(e?.kind) ? e.kind : 'other'
+    console.warn('sync failed', e?.kind || e)
+  } finally {
+    status.syncing = false
+  }
+  // OCR runs in the background (serial queue in repo); fatal errors surface through status.ocr.error
+  if (ocr) Promise.resolve().then(() => app.repo.processPending()).catch(e => console.warn('processPending', e))
+}
+
+// Push + pull, then queue OCR for pending cards. Never throws.
+// Single-flight: a call during a run returns that run, unless force — then a NEW run is chained after it
+// (used after the keys changed, so the new app instance syncs).
+export function syncNow({ ocr = true, force = false } = {}) {
+  if (running && !force) return running
+  const prev = running
+  const p = (async () => {
+    if (prev) await prev.catch(() => {})
+    await runOnce(ocr)
+  })().finally(() => { if (running === p) running = null })
+  running = p
+  return p
+}
+
+// Resolves when no sync run is active.
+export async function waitIdle() {
+  while (running) await running.catch(() => {})
+}
+
+// Called after keys were removed / replaced: drop the old repo binding and bind the new one (if any).
 export function resetStatus() {
   unbind()
   status.error = null
-  status.syncing = false
+  if (!running) status.syncing = false
+  try { bindApp() } catch { /* no keys */ }
 }
