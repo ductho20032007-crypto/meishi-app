@@ -2,6 +2,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { openDb } from '../../src/services/db.js'
 import { createRepo } from '../../src/services/repo.js'
+import { createSync } from '../../src/services/sync.js'
+import { utf8ToB64 } from '../../src/lib/b64.js'
+import Dexie from 'dexie'
 
 let n = 0
 const OCR = { name: '山田 太郎', companyRaw: '株式会社ABC商事', deptPath: ['営業本部'], title: '課長', rank: 5, phones: [], emails: [] }
@@ -10,9 +13,13 @@ const err = kind => Object.assign(new Error(kind), { kind })
 const gate = () => { let open; const p = new Promise(r => { open = r }); return { p, open } }
 const tick = (ms = 5) => new Promise(r => setTimeout(r, ms))
 
-function setup({ extract, autoOcr = false } = {}) {
+function setup({ extract, autoOcr = false, enqueue, getImage } = {}) {
   const db = openDb(`repo-test-${++n}-${Math.random()}`)
-  const sync = { enqueue: vi.fn().mockResolvedValue(), push: vi.fn().mockResolvedValue() }
+  const sync = {
+    enqueue: vi.fn(enqueue || (async () => {})),
+    push: vi.fn().mockResolvedValue(),
+    getImage: vi.fn(getImage || (async path => (await db.images.get(path))?.blob ?? null))
+  }
   const gemini = { extract: vi.fn(extract || (async () => ({ ...OCR }))) }
   const repo = createRepo({ db, sync, gemini, autoOcr, now: () => '2026-11-22T00:00:00.000Z' })
   return { db, sync, gemini, repo }
@@ -201,5 +208,142 @@ describe('company helpers', () => {
     expect(c.deptAliases).toEqual({ '第1営業部': '第一営業部' })
     expect(c.name).toBe('ABC')
     expect(paths(sync).filter(p => p === `companies/${co.id}.json`)).toHaveLength(2)
+  })
+  it('parallel addPlaceholder keeps both (read-modify-write is atomic)', async () => {
+    const { repo, db, co } = await withCompany()
+    await Promise.all([repo.addPlaceholder(co.id, { name: 'x' }), repo.addPlaceholder(co.id, { name: 'y' })])
+    expect((await db.companies.get(co.id)).placeholders).toHaveLength(2)
+  })
+})
+
+describe('OCR finalisation races', () => {
+  it('deleteCard during assignCompany: card stays deleted, last op is delete', async () => {
+    const { repo, db, sync } = setup()
+    const id = await repo.createCard({ front: blob() })
+    const orig = db.companies.toArray.bind(db.companies)
+    db.companies.toArray = async () => { await repo.deleteCard(id); return orig() }
+    await repo.runOcr(id)
+    expect(await db.cards.get(id)).toBeUndefined()
+    const ops = sync.enqueue.mock.calls.filter(c => c[0] === `cards/${id}.json`)
+    expect(ops[ops.length - 1][1]).toBe('delete')
+  })
+  it('updateCard during assignCompany: user edits preserved', async () => {
+    const { repo, db } = setup()
+    const id = await repo.createCard({ front: blob() })
+    const orig = db.companies.toArray.bind(db.companies)
+    db.companies.toArray = async () => { await repo.updateCard(id, { memo: 'USER EDIT', title: '部長' }); return orig() }
+    await repo.runOcr(id)
+    const c = await db.cards.get(id)
+    expect(c).toMatchObject({ memo: 'USER EDIT', title: '部長', status: 'done' })
+  })
+  it('does not overwrite a card that is no longer pending', async () => {
+    const { repo, db } = setup()
+    const id = await repo.createCard({ front: blob() })
+    const orig = db.companies.toArray.bind(db.companies)
+    db.companies.toArray = async () => { await repo.updateCard(id, { status: 'done', ocrBy: 'manual', name: 'Manual' }); return orig() }
+    await repo.runOcr(id)
+    expect(await db.cards.get(id)).toMatchObject({ name: 'Manual', ocrBy: 'manual' })
+  })
+  it('keeps a manually chosen companyId', async () => {
+    const { repo, db } = setup()
+    await db.companies.put({ id: 'coX', name: 'Other', aliases: [], deptAliases: {}, placeholders: [] })
+    const id = await repo.createCard({ front: blob() })
+    await repo.updateCard(id, { companyId: 'coX' })
+    await repo.runOcr(id)
+    expect((await db.cards.get(id)).companyId).toBe('coX')
+    expect(await db.companies.count()).toBe(1)
+  })
+  it('assignCompany leaves a card with companyId untouched', async () => {
+    const { repo, db } = setup()
+    const out = await repo.assignCompany({ companyId: 'c-1', companyRaw: '株式会社新規' })
+    expect(out.companyId).toBe('c-1')
+    expect(await db.companies.count()).toBe(0)
+  })
+})
+
+describe('OCR images', () => {
+  it('missing front image: no Gemini call, ocrError no_image, stays pending', async () => {
+    const { repo, db, gemini, sync } = setup({ getImage: async () => null })
+    const id = await repo.createCard({ front: blob() })
+    await repo.runOcr(id)
+    expect(sync.getImage).toHaveBeenCalledWith(`images/${id}-front.jpg`)
+    expect(gemini.extract).not.toHaveBeenCalled()
+    expect(await db.cards.get(id)).toMatchObject({ status: 'pending', ocrError: 'no_image' })
+  })
+})
+
+describe('atomic writes', () => {
+  it('every enqueue happens inside the same transaction as its write', async () => {
+    const flags = []
+    const { repo, db } = setup({ enqueue: async () => { flags.push(!!Dexie.currentTransaction) } })
+    const id = await repo.createCard({ front: blob(), back: blob() })
+    await repo.updateCard(id, { memo: 'x' })
+    await db.companies.put({ id: 'co1', name: 'A', aliases: [], deptAliases: {}, placeholders: [] })
+    await repo.renameCompany('co1', 'B')
+    await repo.addPlaceholder('co1', { name: 'p' })
+    await repo.deleteCard(id)
+    expect(flags.length).toBeGreaterThanOrEqual(9)
+    expect(flags.every(Boolean)).toBe(true)
+  })
+  it('a concurrent pull never overwrites a local edit (real sync)', async () => {
+    for (let i = 0; i < 5; i++) {
+      const db = openDb(`repo-pull-${++n}-${Math.random()}`)
+      const local = { id: 'x', status: 'done', memo: '', updatedAt: 'a' }
+      await db.cards.put(local)
+      await db.files.put({ path: 'cards/x.json', sha: 'old', base: local })
+      const gh = {
+        getTree: async () => [{ path: 'cards/x.json', sha: 'new' }],
+        getBlob: async () => { await tick(i); return utf8ToB64(JSON.stringify({ ...local, memo: 'REMOTE', updatedAt: 'b' })) }
+      }
+      const sync = createSync({ db, gh })
+      const repo = createRepo({ db, sync, gemini: { extract: vi.fn() }, autoOcr: false })
+      await Promise.all([sync.pull(), (async () => { await tick(i); await repo.updateCard('x', { memo: 'EDIT' }) })()])
+      expect((await db.cards.get('x')).memo).toBe('EDIT')
+      expect(await db.outbox.where('path').equals('cards/x.json').count()).toBe(1)
+    }
+  })
+})
+
+describe('dispose and fatal pause', () => {
+  it('dispose aborts in-flight OCR, clears queue, later calls are no-ops', async () => {
+    let sig
+    const { repo, db, gemini } = setup({
+      extract: (imgs, { signal }) => new Promise((_, rej) => {
+        sig = signal
+        signal.addEventListener('abort', () => rej(Object.assign(new Error('abort'), { name: 'AbortError' })))
+      })
+    })
+    const a = await repo.createCard({ front: blob() }), b = await repo.createCard({ front: blob() })
+    const pa = repo.runOcr(a), pb = repo.runOcr(b)
+    await tick()
+    repo.dispose()
+    await Promise.all([pa, pb])
+    expect(sig.aborted).toBe(true)
+    expect(repo.ocrState.get()).toMatchObject({ runningId: null, queued: [] })
+    expect(gemini.extract).toHaveBeenCalledTimes(1)
+    gemini.extract.mockClear()
+    await repo.runOcr(a)
+    expect(await repo.processPending()).toEqual([])
+    expect(gemini.extract).not.toHaveBeenCalled()
+    expect((await db.cards.get(a)).status).toBe('pending')
+  })
+  it('fatal error pauses the queue until clearOcrError', async () => {
+    const { repo, gemini } = setup({ extract: async () => { throw err('auth') } })
+    for (let i = 0; i < 3; i++) await repo.createCard({ front: blob() })
+    const errs = await repo.processPending()
+    expect(errs).toHaveLength(1)
+    expect(gemini.extract).toHaveBeenCalledTimes(1)
+    expect(await repo.processPending()).toEqual([])
+    expect(gemini.extract).toHaveBeenCalledTimes(1)
+    repo.clearOcrError()
+    expect(repo.ocrState.get().error).toBe(null)
+    gemini.extract.mockResolvedValue({ ...OCR })
+    await repo.processPending()
+    expect(gemini.extract).toHaveBeenCalledTimes(4)
+  })
+  it('deleteCard on a missing card is a no-op', async () => {
+    const { repo, sync } = setup()
+    await repo.deleteCard('nope')
+    expect(sync.enqueue).not.toHaveBeenCalled()
   })
 })

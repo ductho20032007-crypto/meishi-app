@@ -1998,6 +1998,13 @@ createRepo({ db, sync, gemini, now = () => new Date().toISOString(), autoOcr = t
 ```
 
 - [x] Tests (`tests/services/repo.test.js`, node env, fake-indexeddb): createCard, runOcr + company reuse/alias, quota/busy/auth errors, serial queue, ocrState, processPending, deleteCard (+ abort in flight), updateCard rank, placeholder/deptAlias helpers.
+Review fixes (commit `fix: atomic repo writes, OCR races, dispose`):
+- Every write and its `sync.enqueue` run in ONE Dexie rw transaction (cards, companies, images, outbox, conflicts); `enqueue` nests inside it, so a concurrent pull never sees a change without its outbox row. `editCompany` reads-modifies-writes inside the transaction (parallel `addPlaceholder` keeps both).
+- OCR finalisation: company resolved first (`assignCompany`, own transaction; a card that already has `companyId` is left alone), then one transaction re-reads the card and stops if it is missing, aborted or not `pending`; otherwise `mergeOcr` + `companyId` (only if empty) + enqueue. User edits made during OCR are preserved; a card deleted meanwhile stays deleted.
+- Images come from `sync.getImage(path)` (remote fetch when absent). Missing front image: Gemini is not called, `ocrError = 'no_image'`, card stays pending and is retried.
+- Fatal OCR errors (auth/region/bad_request) pause the queue: later jobs and `processPending` are no-ops until `repo.clearOcrError()`. `repo.dispose()` aborts in-flight OCR, clears the queue and disables further OCR; `resetApp()` calls it; `getApp()` throws `Error('no_keys')` without keys.
+- `deleteCard` on a missing card is a no-op; error-path writes are best effort (try/catch) and skipped if `ocrError` is unchanged.
+- `useLive` unchanged signature; new `useLiveState(fn, initial) -> { data, error }`; both guard `getCurrentScope()`. `image.js`: bitmap closed in `finally`, white fill before drawing, `kind: 'unsupported_image'` when decoding fails (retries without options after a TypeError), error when no 2d context.
 - [x] Commit `feat: repo actions, OCR queue, live queries`.
 
 ---

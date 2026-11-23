@@ -1,6 +1,6 @@
 // Wires real instances from the stored config, lazily. Call resetApp() after setup / clearing keys.
 import { db } from './db.js'
-import { getConfig } from './settings.js'
+import { getConfig, hasKeys } from './settings.js'
 import { createGitHub } from './github.js'
 import { createGemini } from './gemini.js'
 import { createSync } from './sync.js'
@@ -9,6 +9,7 @@ import { createRepo } from './repo.js'
 let app = null
 export function getApp() {
   if (!app) {
+    if (!hasKeys()) throw new Error('no_keys')
     const cfg = getConfig()
     const gh = createGitHub({ token: cfg.gh, repo: cfg.repo })
     const gemini = createGemini({ key: cfg.gk, model: cfg.model })
@@ -17,4 +18,7 @@ export function getApp() {
   }
   return app
 }
-export function resetApp() { app = null }
+export function resetApp() {
+  try { app?.repo.dispose() } catch { /* ignore */ }
+  app = null
+}
