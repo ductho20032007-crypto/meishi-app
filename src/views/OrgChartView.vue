@@ -564,6 +564,7 @@ const allPeople = computed(() => {
 /* block chart */
 .chart { margin: 0 16px; padding: 18px 12px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); }
 .box {
+  position: relative;   /* contains the visually-hidden on-path text inside the scrolling row */
   width: 100%; min-height: 56px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line-2); padding: 8px 6px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; text-align: center; color: var(--ink); font: inherit;
 }
