@@ -18,7 +18,19 @@ export default defineConfig({
           { src: 'maskable-icon-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
-      workbox: { navigateFallback: '/meishi-app/index.html', globPatterns: ['**/*.{js,css,html,svg,png,woff2}'] }
+      workbox: { navigateFallback: '/meishi-app/index.html', globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+        runtimeCaching: [
+          { urlPattern: /^https:\/\/fonts\.googleapis\.com\//, handler: 'StaleWhileRevalidate', options: { cacheName: 'google-fonts-css' } },
+          {
+            urlPattern: /^https:\/\/fonts\.gstatic\.com\//, handler: 'CacheFirst',
+            options: {
+              cacheName: 'google-fonts-files',
+              cacheableResponse: { statuses: [0, 200] },
+              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 365 }
+            }
+          }
+        ]
+      }
     })
   ],
   test: { environment: 'jsdom', setupFiles: ['fake-indexeddb/auto'] }

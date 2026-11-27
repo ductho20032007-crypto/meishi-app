@@ -2070,8 +2070,8 @@ Review fixes (commit `fix: atomic repo writes, OCR races, dispose`):
 
 **Files:** `public/logo.svg`, `.github/workflows/deploy.yml`
 
-- [ ] **Step 1:** `npx @vite-pwa/assets-generator --preset minimal-2023 public/logo.svg` → `public/pwa-192x192.png`, `pwa-512x512.png`, `maskable-icon-512x512.png`, `apple-touch-icon-180x180.png`, `favicon.ico`. Add `<link rel="apple-touch-icon" href="/meishi-app/apple-touch-icon-180x180.png">` to index.html.
-- [ ] **Step 2: workflow**
+- [x] **Step 1 (done locally; also runtimeCaching for Google Fonts in vite.config.js):** `npx @vite-pwa/assets-generator --preset minimal-2023 public/logo.svg` → `public/pwa-192x192.png`, `pwa-512x512.png`, `maskable-icon-512x512.png`, `apple-touch-icon-180x180.png`, `favicon.ico`. Add `<link rel="apple-touch-icon" href="/meishi-app/apple-touch-icon-180x180.png">` to index.html.
+- [x] **Step 2: workflow** (done: .github/workflows/deploy.yml)
 
 ```yaml
 name: Deploy
@@ -2099,7 +2099,7 @@ jobs:
         uses: actions/deploy-pages@v4
 ```
 
-- [ ] **Step 3:** `gh api -X POST repos/ductho20032007-crypto/meishi-app/pages -f build_type=workflow` (enable Pages), push, `gh run watch` → success; `curl -sI https://ductho20032007-crypto.github.io/meishi-app/` → 200.
+- [ ] **Step 3 (PENDING network; coordinator pushes):** `gh api -X POST repos/ductho20032007-crypto/meishi-app/pages -f build_type=workflow` (enable Pages), push, `gh run watch` → success; `curl -sI https://ductho20032007-crypto.github.io/meishi-app/` → 200.
 - [ ] **Step 4:** Commit `ci: deploy to github pages`.
 
 ### Task 19: End-to-end verification (Playwright, 390×844, real services)
