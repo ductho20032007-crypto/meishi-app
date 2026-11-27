@@ -13,8 +13,19 @@ const cards = useLive(() => db.cards.toArray(), [])
 const ui = companiesUi
 
 const all = computed(() => companies.value || [])
+// stats of every company in one pass over the cards
+const statsById = computed(() => {
+  const m = new Map(all.value.map(co => [co.id, { cards: 0, notMet: (co.placeholders || []).length, pending: 0 }]))
+  for (const c of cards.value || []) {
+    const s = m.get(c.companyId)
+    if (!s) continue
+    s.cards++
+    if (c.status === 'pending') s.pending++
+  }
+  return m
+})
 const shown = computed(() => filterCompanies(all.value, ui.q).map(co => {
-  const s = companyStats(co, cards.value)
+  const s = statsById.value.get(co.id) || companyStats(co, [])
   const meta = [t('list.cards', s.cards)]
   if (s.notMet) meta.push(t('companies.notMet', s.notMet))
   if (s.pending) meta.push(t('companies.pending', s.pending))

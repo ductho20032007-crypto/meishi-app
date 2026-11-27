@@ -333,7 +333,8 @@
     "renameHint": "Cards keep the text as printed; the chart shows the new name.",
     "newNameRequired": "Enter a new name or pick a department to merge into.",
     "companyNameRequired": "Enter the company name.",
-    "editPersonLabel": "Edit {name}"
+    "editPersonLabel": "Edit {name}",
+    "onPath": "(on the branch of the person being viewed)"
   },
   "titles": {
     "title": "Title dictionary",

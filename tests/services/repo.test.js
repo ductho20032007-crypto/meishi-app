@@ -200,6 +200,22 @@ describe('company helpers', () => {
     expect((await db.companies.get(co.id)).placeholders).toEqual([])
     expect(paths(sync).filter(p => p === `companies/${co.id}.json`)).toHaveLength(3)
   })
+  it('removing a placeholder clears reportsTo of other placeholders pointing at it', async () => {
+    const { repo, db, co } = await withCompany()
+    const boss = await repo.addPlaceholder(co.id, { name: 'boss' })
+    const sub = await repo.addPlaceholder(co.id, { name: 'sub', reportsTo: boss })
+    const other = await repo.addPlaceholder(co.id, { name: 'other', reportsTo: 'x-card' })
+    await repo.removePlaceholder(co.id, boss)
+    const ps = (await db.companies.get(co.id)).placeholders
+    expect(ps.map(p => p.id)).toEqual([sub, other])
+    expect(ps.find(p => p.id === sub).reportsTo).toBeNull()
+    expect(ps.find(p => p.id === other).reportsTo).toBe('x-card')
+  })
+  it('setDeptAlias accepts path-qualified source keys', async () => {
+    const { repo, db, co } = await withCompany()
+    await repo.setDeptAlias(co.id, ['営業本部/第一部'], '営業一部')
+    expect((await db.companies.get(co.id)).deptAliases).toEqual({ '営業本部/第一部': '営業一部' })
+  })
   it('deptAlias and rename', async () => {
     const { repo, db, sync, co } = await withCompany()
     await repo.setDeptAlias(co.id, '第1営業部', '第一営業部')

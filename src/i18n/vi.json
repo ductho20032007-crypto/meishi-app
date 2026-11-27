@@ -333,7 +333,8 @@
     "renameHint": "Danh thiếp vẫn giữ chữ in trên thẻ; sơ đồ hiển thị tên mới.",
     "newNameRequired": "Hãy nhập tên mới hoặc chọn phòng ban để gộp vào.",
     "companyNameRequired": "Hãy nhập tên công ty.",
-    "editPersonLabel": "Sửa {name}"
+    "editPersonLabel": "Sửa {name}",
+    "onPath": "(thuộc nhánh của người đang xem)"
   },
   "titles": {
     "title": "Từ điển chức danh",

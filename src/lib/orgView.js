@@ -1,6 +1,7 @@
 // src/lib/orgView.js — pure helpers turning companies / buildOrg() output into render-ready data
 // for the Companies list (⑤) and the block org chart (⑥).
 import { searchKey, normalizeDept } from './normalize.js'
+import { aliasLookup, isPathKey, normAliasKey, pathKeyParent, pathKeyLeaf, deptPathKeyFrom } from './orgChart.js'
 
 // ---- companies list ----
 const LEGAL_PREFIX = [
@@ -84,22 +85,22 @@ export function chartLevels(org, focusId = null) {
     const groups = parents.filter(p => p.children.length).map(p => ({
       parentKey: p.key, parentName: p.name, parentUnknown: !!p.unknown, onPath: p === org.root ? !!pathKeys.length : path.has(p.key),
       nodes: p.children.map(c => boxOf(c, path, deepest))
-    }))
+    })).sort((a, b) => b.onPath - a.onPath)   // stable: the group on the focus path first
     if (!groups.length) break
     const count = groups.reduce((s, g) => s + g.nodes.length, 0)
     levels.push({ groups, count, wide: count > WIDE })
     parents = parents.flatMap(p => p.children)
   }
-  return { root: { name: null, head: org.root.head, total: org.root.total, onPath: !!focusId && !!org.nodeOf(focusId) }, levels, deepest }
+  return { root: { head: org.root.head, total: org.root.total, onPath: !!focusId && !!org.nodeOf(focusId) }, levels, deepest }
 }
 
-// all nodes of the tree (depth-first), for the "rename department" picker: { key, name, unknown, depth, label }
+// all known dept nodes (depth-first), for the "rename department" picker: { key, name, depth, label, parentKey, sources }
 export function deptNodes(org) {
   const out = []
   ;(function walk(n, depth, trail) {
     for (const c of n.children) {
       const t = c.unknown ? trail : [...trail, c.name]
-      if (!c.unknown) out.push({ key: c.key, name: c.name, depth, label: t.join(' › ') })
+      if (!c.unknown) out.push({ key: c.key, name: c.name, depth, label: t.join(' › '), parentKey: n.key, sources: [...c.sources] })
       walk(c, depth + 1, t)
     }
   })(org.root, 0, [])
@@ -125,14 +126,33 @@ export function deptLabel(org, id) {
   return n && !n.unknown && n.name ? n.name : ''
 }
 
-// deptAliases after renaming / merging department `from` into `to`: earlier aliases that pointed at `from`
-// follow it (buildOrg applies one hop), identity entries are dropped.
+// deptAliases after renaming / merging a department into `to`.
+// `from` = the node's source keys (path-qualified, see orgChart.js) -> each is (re)written; aliases of other branches stay.
+//   The target is resolved through the remaining aliases at the same parent (then bare ones), so merging into a
+//   department whose raw name is aliased lands in its shown name; the entries being rewritten are ignored for that,
+//   so renaming back to the original name removes the alias instead of creating a cycle.
+// `from` as a plain string = legacy bare form: alias the name everywhere; earlier aliases pointing at it follow it.
+// Identity entries are dropped in both forms.
 export function withDeptAlias(aliases, from, to) {
-  const f = String(from ?? '').trim(), d = String(to ?? '').trim()
+  const d = String(to ?? '').trim()
   const same = (a, b) => normalizeDept(a) === normalizeDept(b)
+  const src = aliases || {}
   const out = {}
-  for (const [k, v] of Object.entries(aliases || {})) out[k] = same(v, f) ? d : v
-  out[f] = d
-  for (const [k, v] of Object.entries(out)) if (same(k, v)) delete out[k]
+  if (!Array.isArray(from)) {
+    const f = String(from ?? '').trim()
+    for (const [k, v] of Object.entries(src)) out[k] = same(v, f) ? d : v
+    out[f] = d
+  } else {
+    const keys = from.map(String).filter(Boolean)
+    const norm = k => `${isPathKey(k) ? 'p' : 'b'}:${normAliasKey(k)}`
+    const srcSet = new Set(keys.map(norm))
+    const look = aliasLookup(Object.fromEntries(Object.entries(src).filter(([k]) => !srcSet.has(norm(k)))))
+    for (const [k, v] of Object.entries(src)) if (!srcSet.has(norm(k))) out[k] = v
+    for (const k of keys) {
+      const target = isPathKey(k) ? deptPathKeyFrom(pathKeyParent(k), d) : normalizeDept(d)
+      out[k] = look(target, d) ?? d
+    }
+  }
+  for (const [k, v] of Object.entries(out)) if (same(isPathKey(k) ? pathKeyLeaf(k) : k, v)) delete out[k]
   return out
 }

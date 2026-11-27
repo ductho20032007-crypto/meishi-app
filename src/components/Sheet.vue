@@ -1,6 +1,6 @@
 <script setup>
 // Bottom sheet on a native <dialog showModal> (focus trap, Esc, backdrop). Mount with v-if; emits close once.
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from './Icon.vue'
 
@@ -9,7 +9,18 @@ const emit = defineEmits(['close'])
 const { t } = useI18n()
 const dlg = ref(null)
 const titleId = `sh-${Math.random().toString(36).slice(2, 8)}`
-onMounted(() => { try { dlg.value?.showModal() } catch { dlg.value?.setAttribute('open', '') } })
+// focus goes back to whatever opened the sheet (if it is still in the page) when the sheet goes away
+let opener = null
+onMounted(() => {
+  opener = document.activeElement
+  try { dlg.value?.showModal() } catch { dlg.value?.setAttribute('open', '') }
+})
+onBeforeUnmount(() => {
+  if (opener && opener !== document.body && opener.isConnected && typeof opener.focus === 'function') {
+    const el = opener
+    queueMicrotask(() => { if (el.isConnected) el.focus({ preventScroll: true }) })
+  }
+})
 let closed = false
 const onClosed = () => { if (!closed) { closed = true; emit('close') } }
 const close = () => { if (dlg.value?.open && typeof dlg.value.close === 'function') dlg.value.close(); else onClosed() }

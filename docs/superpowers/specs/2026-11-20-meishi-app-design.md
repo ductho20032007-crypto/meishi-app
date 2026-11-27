@@ -75,7 +75,7 @@ images/{cardId}-back.jpg      (tùy chọn)
   "id": "c-xxxxxxxx",
   "name": "ABC株式会社",
   "aliases": ["株式会社ABC", "ABC Co., Ltd."],
-  "deptAliases": { "第1営業部": "第一営業部" },
+  "deptAliases": { "営業本部/第1営業部": "第一営業部", "/営業本部": "営業本部", "第2営業部": "第二営業部" },
   "placeholders": [
     { "id": "p-xxxx", "name": "佐藤", "deptPath": ["営業本部", "第一営業部"],
       "title": "部長", "rank": 4, "reportsTo": null, "memo": "nghe kể, chưa gặp" }
@@ -84,6 +84,10 @@ images/{cardId}-back.jpg      (tùy chọn)
 }
 ```
 `reportsTo` (ở card hoặc placeholder) trỏ tới `cardId` hoặc `placeholderId` cùng công ty.
+`deptAliases`: khóa là **đường dẫn phòng ban GỐC** (trước khi áp alias) — từng tầng qua `normalizeDept`, ký tự `/` trong tên tầng
+viết thành `%2F`, nối bằng `/`; phòng ban cấp 1 có `/` ở đầu (`"/営業本部"`). Khóa theo đường dẫn chỉ đổi tên đúng nhánh đó
+(đổi `営業本部/第一部` không ảnh hưởng `管理本部/第一部`). Khóa không có `/` (dạng cũ) là alias toàn cục, áp cho mọi tầng.
+Màn ⑥ (đổi tên/gộp phòng ban) luôn ghi khóa theo đường dẫn; chỉ gộp được vào phòng ban cùng cấp cha.
 
 ### 3.4 Đồng bộ
 - **Pull** (mở app, quay lại tab, kéo xuống để làm mới): `GET /git/trees/main?recursive=1` → so SHA từng file với
@@ -210,7 +214,8 @@ Khớp chức danh: bỏ phần phòng ban đứng trước (VD `営業部長` �
 ưu tiên mục dài nhất khớp được (`代表取締役社長` trước `社長`).
 
 ### 5.1 Dựng cây tổ chức (thuật toán)
-1. Lấy cards + placeholders của company; áp `deptAliases` lên từng phần tử `deptPath`.
+1. Lấy cards + placeholders của company; với từng tầng của `deptPath`: tra khóa theo đường dẫn gốc (các tầng gốc phía trên + tầng này), nếu không có thì tra khóa tên trần (dạng cũ); alias áp một bước, không lặp.
+   Phòng ban cùng cha xếp theo tên, hiểu số Ả Rập và chữ số Hán (第一部 < 第二部 < 第十部, 1課 < 2課 < 10課).
 2. Dựng cây phòng ban theo `deptPath` (prefix chung = cùng nhánh). Người không có `deptPath` → nhóm "(Chưa rõ phòng ban)" dưới gốc.
 3. Trong mỗi phòng ban: người xếp theo `rank` tăng dần, rồi theo tên. Người có rank nhỏ nhất = trưởng nhánh.
    Người ở gốc công ty (không có `deptPath`, rank 1–2) là cấp cao nhất. Người không có `deptPath` và rank ≥ 3 → khối "(Chưa rõ phòng ban)".

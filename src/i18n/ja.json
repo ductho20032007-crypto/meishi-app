@@ -333,7 +333,8 @@
     "renameHint": "名刺には印刷された表記が残り、組織図には新しい名前が表示されます。",
     "newNameRequired": "新しい名前を入力するか、統合先の部署を選んでください。",
     "companyNameRequired": "会社名を入力してください。",
-    "editPersonLabel": "{name} を編集"
+    "editPersonLabel": "{name} を編集",
+    "onPath": "（表示中の人の所属ライン）"
   },
   "titles": {
     "title": "役職辞書",

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildOrg } from '../../src/lib/orgChart.js'
+import { buildOrg, compareDeptName } from '../../src/lib/orgChart.js'
 const P = (id, name, rank, deptPath = [], extra = {}) => ({ id, name, rank, deptPath, reportsTo: null, ...extra })
 const people = () => [
   P('ito', '伊藤', 1, [], { placeholder: true }),
@@ -74,5 +74,60 @@ describe('buildOrg', () => {
   })
   it('pathTo returns node keys from root to person node', () => {
     expect(buildOrg(people()).pathTo('yamada')).toEqual(['営業本部', '営業本部第一営業部'])
+  })
+})
+
+describe('path-scoped deptAliases', () => {
+  const ps = () => [
+    P('a', 'A', 5, ['営業本部', '第一部']),
+    P('b', 'B', 5, ['管理本部', '第一部']),
+    P('c', 'C', 5, ['営業本部', '第1部'])
+  ]
+  it('a path-qualified key renames only that branch', () => {
+    const org = buildOrg(ps(), { '営業本部/第一部': '営業一部' })
+    expect(org.nodeOf('a').name).toBe('営業一部')
+    expect(org.nodeOf('b').name).toBe('第一部')
+  })
+  it('a top-level path key starts with /, keys are normalised (width / spaces)', () => {
+    const org = buildOrg(ps(), { '/営業本部': 'セールス', '営業本部 / 第一部': 'X' })
+    expect(org.nodeOf('a').parent.name).toBe('セールス')
+    expect(org.nodeOf('a').name).toBe('X')
+    expect(org.nodeOf('b').parent.name).toBe('管理本部')
+  })
+  it('the path key uses the ORIGINAL parent path, even when the parent is renamed', () => {
+    const org = buildOrg(ps(), { '/営業本部': 'セールス', '営業本部/第一部': '一部' })
+    expect(org.nodeOf('a').name).toBe('一部')
+  })
+  it('legacy bare aliases still apply everywhere; the path key wins over the bare one', () => {
+    let org = buildOrg(ps(), { 第一部: '一課' })
+    expect([org.nodeOf('a').name, org.nodeOf('b').name]).toEqual(['一課', '一課'])
+    org = buildOrg(ps(), { 第一部: '一課', '管理本部/第一部': '総務' })
+    expect([org.nodeOf('a').name, org.nodeOf('b').name]).toEqual(['一課', '総務'])
+  })
+  it('nodes list the original path keys that land in them (sources)', () => {
+    const org = buildOrg(ps(), { '営業本部/第1部': '第一部' })
+    expect(org.nodeOf('a')).toBe(org.nodeOf('c'))
+    expect(org.nodeOf('a').sources.sort()).toEqual(['営業本部/第1部', '営業本部/第一部'])
+    expect(org.nodeOf('a').parent.sources).toEqual(['/営業本部'])
+  })
+  it('a / inside a segment is escaped in path keys', () => {
+    const org = buildOrg([P('s', 'S', 5, ['A/B'])])
+    expect(org.nodeOf('s').sources).toEqual(['/A%2FB'])
+    expect(buildOrg([P('s', 'S', 5, ['A/B'])], { '/A%2FB': 'Z' }).nodeOf('s').name).toBe('Z')
+  })
+})
+
+describe('department sibling order', () => {
+  it('understands kanji numerals and digits', () => {
+    expect(['第十部', '第三部', '第一部', '第二部'].sort(compareDeptName)).toEqual(['第一部', '第二部', '第三部', '第十部'])
+    expect(['10課', '2課', '1課'].sort(compareDeptName)).toEqual(['1課', '2課', '10課'])
+    expect(['第二十一部', '第二十部', '第十二部'].sort(compareDeptName)).toEqual(['第十二部', '第二十部', '第二十一部'])
+    expect(['第１部', '第2部'].sort(compareDeptName)).toEqual(['第１部', '第2部'])
+    expect(['B', 'A', '営業部', '経理部'].sort(compareDeptName)).toEqual(['A', 'B', '営業部', '経理部'].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)))
+    expect(compareDeptName('第一部', '第一部')).toBe(0)
+  })
+  it('buildOrg sorts children with it', () => {
+    const org = buildOrg(['第十部', '第三部', '第一部'].map((d, i) => P('x' + i, 'x', 5, [d])))
+    expect(org.root.children.map(c => c.name)).toEqual(['第一部', '第三部', '第十部'])
   })
 })

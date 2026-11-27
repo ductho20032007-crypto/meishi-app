@@ -1,7 +1,8 @@
 <script setup>
 // ⑥ Org chart (block style) — reporting chain of the focused person, same department, whole-company block chart;
 // edit mode: people without a card (placeholders), rename / merge departments, reportsTo, rename company.
-import { ref, reactive, computed, watch, nextTick } from 'vue'
+import { ref, shallowRef, reactive, computed, watch, nextTick, onMounted, onScopeDispose } from 'vue'
+import { liveQuery } from 'dexie'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
@@ -19,7 +20,18 @@ const { t, locale } = useI18n()
 const router = useRouter()
 
 const companies = useLive(() => db.companies.toArray(), null)
-const cards = useLive(() => db.cards.toArray(), [])
+// cards of this company only; the live query is recreated when the route reuses the view for another company
+const cards = shallowRef([])
+let cardsSub = null
+watch(() => props.id, id => {
+  cardsSub?.unsubscribe()
+  cards.value = []
+  cardsSub = liveQuery(() => db.cards.where('companyId').equals(id).toArray()).subscribe({
+    next: v => { cards.value = v },
+    error: e => console.error('liveQuery', e)
+  })
+}, { immediate: true })
+onScopeDispose(() => cardsSub?.unsubscribe())
 const company = computed(() => (companies.value || []).find(c => c.id === props.id) || null)
 const missing = computed(() => companies.value !== null && !company.value)
 
@@ -41,6 +53,21 @@ const focusDept = computed(() => {
   return n.unknown ? t('org.unknownDept') : (n.name || company.value?.name || '')
 })
 const chart = computed(() => chartLevels(org.value, focused.value?.id || null))
+
+// ---- keep the focus path visible in rows that scroll horizontally ----
+const chartEl = ref(null)
+function scrollToPath() {
+  for (const row of chartEl.value?.querySelectorAll('.row.wide') || []) {
+    const box = row.querySelector('.box.deep') || row.querySelector('.box.on')
+    if (!box) continue
+    const r = row.getBoundingClientRect(), b = box.getBoundingClientRect()
+    const left = row.scrollLeft + (b.left - r.left) - (r.width - b.width) / 2
+    row.scrollTo({ left: Math.max(0, left), behavior: 'auto' })
+  }
+}
+const pathSig = computed(() => `${focused.value?.id || ''}|${chart.value.deepest || ''}|${chart.value.levels.map(l => l.count).join(',')}`)
+watch(pathSig, () => nextTick(scrollToPath))
+onMounted(() => nextTick(scrollToPath))
 
 // ---- person text ----
 const nameOf = p => p?.name || t('detail.noName')
@@ -86,11 +113,13 @@ let personLoaded = false
 function openPerson(p, presetPath = []) {
   blockKey.value = null
   personLoaded = false
+  segInputs.value = []
+  const boss = p?.reportsTo && p.reportsTo !== p.id && people.value.some(x => x.id === p.reportsTo) ? p.reportsTo : null
   Object.assign(person, {
     open: true, error: '', saving: false,
     mode: !p ? 'add' : p.placeholder ? 'ph' : 'card', id: p?.id || null,
     name: p?.name || '', title: p?.title || '', deptPath: [...(p?.deptPath || presetPath)],
-    rank: p?.rank ?? null, reportsTo: p?.reportsTo ?? null, memo: p?.memo || ''
+    rank: p?.rank ?? null, reportsTo: boss, memo: p?.memo || ''
   })
   person.rankTouched = !!p && p.rank != null && p.rank !== rankFor(p.title || '')
   nextTick(() => { personLoaded = true })
@@ -174,16 +203,19 @@ function openDept(key = '') {
   Object.assign(dept, { open: true, key: key || first, newName: '', mergeTo: '', error: '', saving: false })
 }
 const deptFrom = computed(() => deptChoices.value.find(d => d.key === dept.key) || null)
-const mergeChoices = computed(() => [...new Set(deptChoices.value.map(d => d.name))].filter(n => n !== deptFrom.value?.name))
+// path-scoped aliases: a department can only be merged into a sibling (same parent)
+const mergeChoices = computed(() => [...new Set(deptChoices.value
+  .filter(d => deptFrom.value && d.parentKey === deptFrom.value.parentKey && d.key !== deptFrom.value.key).map(d => d.name))])
 watch(() => dept.newName, v => { if (v.trim()) dept.mergeTo = '' })
 watch(() => dept.mergeTo, v => { if (v) dept.newName = '' })
+watch(() => dept.key, () => { dept.mergeTo = '' })
 async function saveDept() {
   if (dept.saving || !deptFrom.value) return
   const to = dept.newName.trim() || dept.mergeTo
   if (!to) { dept.error = t('org.newNameRequired'); return }
   dept.saving = true; dept.error = ''
   try {
-    await getApp().repo.setDeptAlias(props.id, deptFrom.value.name, to)
+    await getApp().repo.setDeptAlias(props.id, deptFrom.value.sources, to)
     dept.open = false
   } catch (e) {
     console.warn('saveDept', e)
@@ -297,8 +329,8 @@ const allPeople = computed(() => {
       <!-- (3) whole company -->
       <h2 class="sec">{{ t('org.whole') }}</h2>
       <p v-if="!focused && people.length" class="hint pad hint-top">{{ t('org.pickHint') }}</p>
-      <div class="chart">
-        <button type="button" class="box root" @click="openBlock('')">
+      <div ref="chartEl" class="chart">
+        <button type="button" class="box root" :class="{ on: chart.root.onPath && !chart.deepest }" :aria-current="chart.root.onPath && !chart.deepest ? 'true' : undefined" @click="openBlock('')">
           <span class="bn">{{ company.name }}</span>
           <span class="bm">{{ chart.root.head ? shortHead(chart.root.head) : t('org.people', chart.root.total) }}</span>
         </button>
@@ -313,8 +345,10 @@ const allPeople = computed(() => {
               <div class="cols">
                 <div v-for="n in g.nodes" :key="n.key" class="col">
                   <span class="vl stub" :class="{ on: n.onPath }" aria-hidden="true" />
-                  <button type="button" class="box" :class="{ on: n.onPath, deep: n.deepest, unk: n.unknown }" @click="openBlock(n.key)">
+                  <button type="button" class="box" :class="{ on: n.onPath, deep: n.deepest, unk: n.unknown }"
+                    :aria-current="n.deepest ? 'true' : undefined" @click="openBlock(n.key)">
                     <span class="bn">{{ boxName(n) }}</span>
+                    <span v-if="n.onPath" class="visually-hidden">{{ t('org.onPath') }}</span>
                     <span v-if="n.head" class="bm">{{ shortHead(n.head) }}</span>
                     <span class="bm">{{ t('org.people', n.total) }}</span>
                   </button>
@@ -477,7 +511,7 @@ const allPeople = computed(() => {
 .h1 { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .edit-btn {
-  flex: none; height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid var(--line-2); background: var(--surface);
+  flex: none; height: 44px; padding: 0 14px; border-radius: 22px; border: 1px solid var(--line-2); background: var(--surface);
   display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: var(--accent);
 }
 .edit-btn.on { background: var(--accent); border-color: var(--accent); color: #FFFFFF; }
@@ -538,6 +572,7 @@ const allPeople = computed(() => {
 .box.root { width: 200px; max-width: 100%; margin: 0 auto; background: var(--ink); border-color: var(--ink); color: #FFFFFF; padding: 10px 8px; }
 .box.root .bn { font-size: 14px; }
 .box.root .bm { color: #C5C9D1; }
+.box.root.on { box-shadow: 0 0 0 3px var(--accent); }
 .box.on { border: 2px solid var(--accent); }
 .box.deep { background: var(--accent); border-color: var(--accent); color: #FFFFFF; }
 .box.deep .bm { color: #DCE5FA; }

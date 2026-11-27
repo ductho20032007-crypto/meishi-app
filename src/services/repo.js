@@ -259,8 +259,13 @@ export function createRepo({ db, sync, gemini, now = () => new Date().toISOStrin
   }
   const updatePlaceholder = (companyId, phId, patch) =>
     editCompany(companyId, co => ({ ...co, placeholders: (co.placeholders || []).map(p => p.id === phId ? { ...p, ...patch, id: phId } : p) }))
+  // other placeholders reporting to the removed one fall back to the inferred boss
   const removePlaceholder = (companyId, phId) =>
-    editCompany(companyId, co => ({ ...co, placeholders: (co.placeholders || []).filter(p => p.id !== phId) }))
+    editCompany(companyId, co => ({
+      ...co,
+      placeholders: (co.placeholders || []).filter(p => p.id !== phId).map(p => (p.reportsTo === phId ? { ...p, reportsTo: null } : p))
+    }))
+  // from: the dept node's source keys (path-qualified, scoped to that branch) or a bare name (every level)
   const setDeptAlias = (companyId, from, to) =>
     editCompany(companyId, co => ({ ...co, deptAliases: withDeptAlias(co.deptAliases, from, to) }))
   // the old name stays an alias, so cards printed with it still match this company

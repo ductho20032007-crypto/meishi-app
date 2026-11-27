@@ -117,15 +117,61 @@ describe('org chart helpers', () => {
 })
 
 describe('withDeptAlias', () => {
-  it('adds an alias and keeps the others', () => {
+  it('legacy bare form: adds an alias and keeps the others', () => {
     expect(withDeptAlias({ a: 'b' }, '第二営業部', '第一営業部')).toEqual({ a: 'b', 第二営業部: '第一営業部' })
     expect(withDeptAlias(undefined, 'x', 'y')).toEqual({ x: 'y' })
   })
-  it('earlier aliases pointing at the renamed department follow it', () => {
+  it('legacy bare form: earlier aliases pointing at the renamed name follow it', () => {
     expect(withDeptAlias({ 第1営業部: '第一営業部' }, '第一営業部', '営業一部')).toEqual({ 第1営業部: '営業一部', 第一営業部: '営業一部' })
   })
-  it('renaming back to the raw name drops identity entries', () => {
+  it('identity entries are dropped', () => {
     expect(withDeptAlias({ raw: 'X' }, 'X', 'raw')).toEqual({ X: 'raw' })
     expect(withDeptAlias({}, ' 営業部 ', '営業部')).toEqual({})
+    expect(withDeptAlias({}, ['営業本部/第一部'], '第一部')).toEqual({})
+  })
+  it('path form writes every source key and leaves other branches alone', () => {
+    expect(withDeptAlias({ '管理本部/第一部': '総務' }, ['営業本部/第一部', '営業本部/第1部'], '営業一部'))
+      .toEqual({ '管理本部/第一部': '総務', '営業本部/第一部': '営業一部', '営業本部/第1部': '営業一部' })
+  })
+  it('renaming back to the original name removes the alias instead of creating a cycle', () => {
+    // node shown as "B" comes from /A -> B; renaming it to "A" must not resolve through /A -> B again
+    expect(withDeptAlias({ '/A': 'B' }, ['/A'], 'A')).toEqual({})
+    expect(withDeptAlias({ 'P/A': 'B', 'P/B': 'A' }, ['P/A'], 'A')).toEqual({ 'P/B': 'A' })
+  })
+  it('resolves the target through existing aliases at the same parent, then bare ones (M1)', () => {
+    // merging into "第二営業部" (raw name shown as 営業二部) lands in 営業二部
+    expect(withDeptAlias({ '営業本部/第二営業部': '営業二部' }, ['営業本部/第一営業部'], '第二営業部'))
+      .toEqual({ '営業本部/第二営業部': '営業二部', '営業本部/第一営業部': '営業二部' })
+    expect(withDeptAlias({ 二部: '第二部' }, ['/一部'], '二部')).toEqual({ 二部: '第二部', '/一部': '第二部' })
+    // an alias at another parent does not apply
+    expect(withDeptAlias({ '管理本部/第二営業部': 'X' }, ['営業本部/第一営業部'], '第二営業部'))
+      .toEqual({ '管理本部/第二営業部': 'X', '営業本部/第一営業部': '第二営業部' })
+  })
+  it('works end-to-end with buildOrg: renaming 営業本部›第一部 leaves 管理本部›第一部 untouched', () => {
+    const ps = [{ id: 'a', name: 'a', rank: 5, deptPath: ['営業本部', '第一部'] }, { id: 'b', name: 'b', rank: 5, deptPath: ['管理本部', '第一部'] }]
+    const node = buildOrg(ps).nodeOf('a')
+    const al = withDeptAlias({}, node.sources, '営業一部')
+    const org = buildOrg(ps, al)
+    expect(org.nodeOf('a').name).toBe('営業一部')
+    expect(org.nodeOf('b').name).toBe('第一部')
+  })
+})
+
+describe('chartLevels ordering', () => {
+  it('the group on the focus path comes first in its level', () => {
+    const ps = [
+      { id: 'k', name: 'k', rank: 5, deptPath: ['A', 'A1'] },
+      { id: 'm', name: 'm', rank: 5, deptPath: ['B', 'B1'] }
+    ]
+    const { levels } = chartLevels(buildOrg(ps), 'm')
+    expect(levels[1].groups.map(g => g.parentName)).toEqual(['B', 'A'])
+    expect(chartLevels(buildOrg(ps)).levels[1].groups.map(g => g.parentName)).toEqual(['A', 'B'])
+  })
+  it('root carries no name; deptNodes expose sources and parentKey', () => {
+    const o = buildOrg([{ id: 'k', name: 'k', rank: 5, deptPath: ['A', 'A1'] }])
+    expect(chartLevels(o).root).not.toHaveProperty('name')
+    const nodes = deptNodes(o)
+    expect(nodes[1]).toMatchObject({ name: 'A1', sources: ['A/A1'], parentKey: nodes[0].key })
+    expect(nodes[0]).toMatchObject({ sources: ['/A'], parentKey: '' })
   })
 })
